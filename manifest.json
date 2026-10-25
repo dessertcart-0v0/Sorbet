@@ -1,0 +1,12 @@
+{
+  "kind": "marinara.personal-extension",
+  "version": 1,
+  "config": {
+    "name": "Sorbet",
+    "version": "1.0.0",
+    "description": "채팅 옆에서 외전을 이어 쓰는 미니 채팅방. 분석 · HTML 결과물도 만들고 보관함에 모아 봅니다.",
+    "runtime": "client",
+    "capabilities": ["full_page_access"],
+    "jsPath": "sorbet.js"
+  }
+}
