@@ -1,5 +1,5 @@
 /**
- * ✦ Marinara Engine Extension — 소르베 v1.0.0 ✦
+ * ✦ Marinara Engine Extension — 소르베 v1.1.0 ✦
  *
  * 구조
  * ─────────────────────────────────────────────
@@ -55,10 +55,13 @@
   /* ══════════════════════════════════════════════════════════
    * § 0  상수
    * ══════════════════════════════════════════════════════════ */
-  const VERSION = 'v1.0.0';               // 헤더 주석과 이 값을 함께 올릴 것
+  const VERSION = 'v1.1.0';               // 헤더 주석과 이 값을 함께 올릴 것
   const NS    = 'srb';
   const SK    = 'srb-v1';                 // localStorage: 소규모 설정 + IndexedDB 장애 시 기존 데이터 폴백
+  const RECENT_RUNS_MAX = 60;
+  const RECENT_RUNS_TTL_MS = 24 * 60 * 60 * 1000;   // 서버 sorbet-runs 의 끝난 결과 보관 기간과 같다
   const SK_RGX = 'srb-v1-regex';          // 정규식 별도 저장 (메인 저장이 용량초과로 실패해도 보존)
+  const SK_TITLES = 'srb-v1-titles';      // 받아 놓고 아직 검토하지 않은 AI 제목 — 창이 닫히거나 새로고침돼도 남는다
   const META_KEY = 'srbAttachedForms';    // chat.metadata 키: 이 채팅에 추가된 양식 ID 배열
 
   /* ── 옛 백업(mqrp) 호환 ──────────────────────────────────────
@@ -461,6 +464,7 @@ Return only the finished HTML document. Begin with <!DOCTYPE html> and end with 
     users:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
     info:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>',
     sweep:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 3l-7 7"/><path d="M12 10l-8.5 8.5a2.1 2.1 0 0 0 3 3L15 13"/><path d="M9 16l3 3"/><path d="M5 21h4"/></svg>',
+    expand:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>',
     collapse:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>',
     drag:    '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>',
     sat:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 6a6 6 0 0 1 6 6"/><path d="M2 12a12 12 0 0 1 10 10"/><circle cx="5" cy="19" r="1" fill="currentColor"/></svg>',
@@ -750,6 +754,7 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
     notifs: [],           // [{id,ts,kind,qrId,qrLabel,chatId,chatName,rid,read}] — 생성 완료 알림
     contHistory: [],      // 이어쓰기 최근 지시
     pendingRuns: [],      // 서버에 맡겨 둔 생성 (탭을 꺼도 돌아와서 회수한다)
+    recentRuns: [],       // 최근 24시간 서버 생성 — 기기끼리 공유. 결과가 사라져도 '유실된 결과 찾기'가 서버 기록에서 되살린다
     resultsInIdb: false,  // 결과를 IndexedDB 로 옮겼는가 (한 번만 이전)
     bulkInIdb: false,     // 양식 원문·CSS·스킨을 IndexedDB 로 옮겼는가
     settings: {
@@ -792,6 +797,7 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
       showLiveText: true,       // 생성 중 쓰는 글을 픽업 카드 · 결과 보기 아래에 바로 보인다
       liveAutoScroll: true,     // 결과 보기에서 쓰는 중인 글을 따라 아래로 내려간다
       partialEdit: true,        // 결과 글을 고르면 '고치기' 단추를 띄운다
+      dblEdit: true,            // 결과 본문을 더블클릭하면 수정을 연다
       anchorThreadHistory: true, // 갈래는 루트를 만든 시점의 본편 히스토리만 본다
       chatArchive: false,       // 본편 채팅을 소르베에 한 벌 보관 (분기 지점을 rowid로 고정)
       archiveRecall: false,     // 아카이브에서 관련 장면을 찾아 이어쓰기에 얹는다
@@ -927,6 +933,7 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
       st.notifsResetAt = typeof p.notifsResetAt === 'string' ? p.notifsResetAt : null;
       st.contHistory = Array.isArray(p.contHistory) ? p.contHistory.slice(0, 8) : [];
       st.pendingRuns = Array.isArray(p.pendingRuns) ? p.pendingRuns.slice(0, 20) : [];
+      st.recentRuns = Array.isArray(p.recentRuns) ? p.recentRuns.slice(0, RECENT_RUNS_MAX) : [];
       st.resultsInIdb = !!p.resultsInIdb;
       st.bulkInIdb = !!p.bulkInIdb;
       // 별도 키에 저장된 정규식이 있으면 그걸 우선 (메인 저장이 실패했던 경우 대비)
@@ -968,6 +975,7 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
         showLiveText:          p.settings?.showLiveText !== false,
         liveAutoScroll:        p.settings?.liveAutoScroll !== false,
         partialEdit:           p.settings?.partialEdit !== false,
+        dblEdit:               p.settings?.dblEdit !== false,
         anchorThreadHistory:   p.settings?.anchorThreadHistory   ?? true,
         chatArchive:           p.settings?.chatArchive           ?? false,
         archiveRecall:         p.settings?.archiveRecall         ?? false,
@@ -1403,6 +1411,17 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
     return out;
   }
 
+  /* 같은 결과 ID면 current(서버 등)가 이기되, 그 안의 이어쓴 편(children)은 편 ID로 합친다.
+     루트째 갈아끼우면 한쪽에만 있는 이어쓰기가 사라지고, 그 상태가 IndexedDB 에도 그대로 써진다. */
+  function mergeResultTree(stored, current) {
+    const storedById = new Map((Array.isArray(stored) ? stored : []).filter(x => x?.id).map(x => [x.id, x]));
+    return mergeStoredList(stored, current).map(node => {
+      const old = node?.id ? storedById.get(node.id) : null;
+      if (!old || old === node || !Array.isArray(old.children) || !old.children.length) return node;
+      return { ...node, children: mergeResultTree(old.children, Array.isArray(node.children) ? node.children : []) };
+    });
+  }
+
   function mergeStoredResults(stored, current) {
     const out = {};
     const qrIds = new Set([...Object.keys(stored || {}), ...Object.keys(current || {})]);
@@ -1410,12 +1429,111 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
       const byChat = {};
       const chatIds = new Set([...Object.keys(stored?.[qrId] || {}), ...Object.keys(current?.[qrId] || {})]);
       for (const chatId of chatIds) {
-        const merged = mergeStoredList(stored?.[qrId]?.[chatId], current?.[qrId]?.[chatId]);
+        const merged = mergeResultTree(stored?.[qrId]?.[chatId], current?.[qrId]?.[chatId]);
         if (merged.length) byChat[chatId] = merged;
       }
       if (Object.keys(byChat).length) out[qrId] = byChat;
     }
     return out;
+  }
+
+  /* 지운 것이 되살아나지 않게 — 마지막으로 서버와 맞췄을 때의 ID 목록(기준)을 기기마다 따로 둔다.
+     합칠 때 한쪽에만 있는 항목은
+       · 기준에 없으면 새로 만든 것 → 남긴다
+       · 기준에 있으면 다른 쪽에서 지운 것 → 뺀다
+     예전엔 무조건 합집합이라, 지우기 전 목록을 들고 있던 기기가 켜지면 지운 게 서버에 다시 올라갔다. */
+  const SYNC_BASE_KEY = `${NS}-sync-base-v1`;
+  const SHARED_LIST_KEYS = ['library', 'deletedForms', 'folders', 'regexScripts', 'contHistory', 'recentRuns'];
+  const SHARED_MAP_KEYS = ['panelFolders', 'attachedByChat', 'cssByChat', 'skinPresets'];
+  let _syncBase = (() => {
+    try {
+      const b = JSON.parse(localStorage.getItem(SYNC_BASE_KEY) || 'null');
+      if (b && typeof b === 'object') return { state: b.state || null, results: b.results || null };
+    } catch {}
+    return { state: null, results: null };
+  })();
+  function saveSyncBase() { try { localStorage.setItem(SYNC_BASE_KEY, JSON.stringify(_syncBase)); } catch {} }
+  const idsOfList = (list) => (Array.isArray(list) ? list : []).filter(x => x?.id).map(x => x.id);
+  function setStateSyncBase(snap) {
+    const base = {};
+    for (const k of SHARED_LIST_KEYS) base[k] = idsOfList(snap?.[k]);
+    for (const k of SHARED_MAP_KEYS) base[k] = Object.keys(snap?.[k] || {});
+    _syncBase.state = base;
+    saveSyncBase();
+  }
+  function resultIdsOfChat(byQr) {
+    const out = new Set();
+    for (const list of Object.values(byQr || {})) collectTreeIds(list, out);
+    return out;
+  }
+  function setResultSyncBase(chatId, byQr, { save = true } = {}) {
+    _syncBase.results ??= {};
+    const ids = [...resultIdsOfChat(byQr)];
+    if (ids.length) _syncBase.results[chatId] = ids; else delete _syncBase.results[chatId];
+    if (save) saveSyncBase();
+  }
+  // 한꺼번에 많이 사라졌으면 지운 게 아니라 저장소가 비워진 것(서버 재설치 · 브라우저 데이터 삭제)일 수 있다 — 그때는 빼지 않고 예전처럼 합친다
+  const looksWiped = (gone, total) => gone > 30 && gone > total * 0.5;
+
+  // 공용 상태: 기준에 있는데 한쪽에서 빠진 항목을 뺀다
+  function dropDeletedShared(merged, local, server) {
+    const base = _syncBase.state;
+    if (!base) return merged;
+    const plans = [];
+    let total = 0, goneLocal = 0, goneServer = 0;
+    for (const k of [...SHARED_LIST_KEYS, ...SHARED_MAP_KEYS]) {
+      const isList = SHARED_LIST_KEYS.includes(k);
+      const B = new Set(base[k] || []);
+      const L = new Set(isList ? idsOfList(local?.[k]) : Object.keys(local?.[k] || {}));
+      const S = new Set(isList ? idsOfList(server?.[k]) : Object.keys(server?.[k] || {}));
+      total += B.size;
+      for (const id of B) { if (L.has(id) && !S.has(id)) goneServer++; if (S.has(id) && !L.has(id)) goneLocal++; }
+      plans.push({ k, isList, B, L, S });
+    }
+    const keepServerOnly = looksWiped(goneLocal, total);   // 이 기기 저장소가 비었으면 서버에만 있는 것은 지킨다
+    const keepLocalOnly = looksWiped(goneServer, total);   // 서버가 비었으면 이 기기에만 있는 것은 지킨다
+    const dead = (id, B, L, S) => B.has(id) && !(L.has(id) && S.has(id))
+      && !(keepServerOnly && S.has(id)) && !(keepLocalOnly && L.has(id));
+    for (const { k, isList, B, L, S } of plans) {
+      if (isList) merged[k] = (merged[k] || []).filter(x => !x?.id || !dead(x.id, B, L, S));
+      else for (const key of Object.keys(merged[k] || {})) if (dead(key, B, L, S)) delete merged[k][key];
+    }
+    return merged;
+  }
+
+  // 결과: 채팅마다 기준 ID(이어쓴 편까지)에 있는데 한쪽에서 빠진 편을 하위째 뺀다
+  function dropDeletedResults(merged, local, server) {
+    const base = _syncBase.results;
+    if (!base) return merged;
+    const chatIds = new Set([...resultChatIds(local), ...resultChatIds(server), ...Object.keys(base)]);
+    const per = new Map();
+    let total = 0, goneLocal = 0, goneServer = 0;
+    for (const chatId of chatIds) {
+      const B = new Set(base[chatId] || []);
+      if (!B.size) continue;
+      const L = resultIdsOfChat(resultSnapshotForChat(chatId, local));
+      const S = resultIdsOfChat(resultSnapshotForChat(chatId, server));
+      total += B.size;
+      for (const id of B) { if (L.has(id) && !S.has(id)) goneServer++; if (S.has(id) && !L.has(id)) goneLocal++; }
+      per.set(chatId, { B, L, S });
+    }
+    const keepServerOnly = looksWiped(goneLocal, total);
+    const keepLocalOnly = looksWiped(goneServer, total);
+    const prune = (list, { B, L, S }) => (Array.isArray(list) ? list : []).flatMap(n => {
+      const id = n?.id;
+      if (id && B.has(id) && !(L.has(id) && S.has(id)) && !(keepServerOnly && S.has(id)) && !(keepLocalOnly && L.has(id))) return [];
+      return Array.isArray(n?.children) && n.children.length ? [{ ...n, children: prune(n.children, { B, L, S }) }] : [n];
+    });
+    for (const [qrId, byChat] of Object.entries(merged)) {
+      for (const [chatId, list] of Object.entries(byChat || {})) {
+        const p = per.get(chatId);
+        if (!p) continue;
+        const next = prune(list, p);
+        if (next.length) byChat[chatId] = next; else delete byChat[chatId];
+      }
+      if (!Object.keys(byChat || {}).length) delete merged[qrId];
+    }
+    return merged;
   }
 
   function mergeStoredBulk(stored) {
@@ -1504,6 +1622,7 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
 
   // st.results 를 채팅 단위로 뒤집어 저장 (변경된 채팅만)
   let _dirtyChats = new Set();
+  let _unsentChats = new Set();   // 서버에 아직 못 올린 채팅 — 받아 오기가 이 채팅을 서버본으로 갈아끼우지 않게
   let _flushTimer = null;
 
   // 이전 검증은 개수만 같아도 통과시키면, 같은 개수의 다른 결과나 이전에 남은
@@ -1565,12 +1684,16 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
       if (serverSyncEnabled() && _serverSyncReady && !_serverSyncApplying) {
         try {
           await putServerResultsForChat(chatId);
+          _unsentChats.delete(chatId);
         } catch (e) {
-          _dirtyChats.add(chatId); // 연결 복구 뒤 다시 보낸다.
+          _dirtyChats.add(chatId); _unsentChats.add(chatId); // 연결 복구 뒤 다시 보낸다.
           _serverSyncLastError = e?.message || String(e);
           console.warn('[소르베] 서버 결과 저장 실패 — IndexedDB에는 보존됨:', chatId, e);
           updateServerSyncStatusUi();
         }
+      } else if (serverSyncEnabled()) {
+        // 서버 받아 오기 중이거나 연결 전이라 못 올렸다 — 건너뛰고 잊으면 이 기기에만 남는다. 남겨 두고 다음에 보낸다.
+        _dirtyChats.add(chatId); _unsentChats.add(chatId);
       }
     }
   }
@@ -1676,7 +1799,7 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
    * ⚠ 목록 조회가 성공하고 비어 있지 않을 때만 판단한다.
    *   (요청이 실패했는데 '전부 삭제됨'으로 오판하면 살아있는 방까지 날아간다) */
   async function findOrphans() {
-    const live = await GET('/chats');
+    const live = await fetchChatList();
     if (!Array.isArray(live) || !live.length) throw new Error('채팅 목록을 확인할 수 없습니다.');
     const alive = new Set(live.map(c => c.id));
 
@@ -2038,7 +2161,7 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
     });
     // 저장된 결과에는 예전 채팅 이름만 남아 있을 수 있다. 현재 채팅 목록을 한 번 읽어
     // 이름 변경도 반영하고, ID만 보이는 행을 가능한 한 실제 이름으로 복구한다.
-    GET('/chats').then(chats => {
+    fetchChatList().then(chats => {
       if (!document.body.contains(ov) || !Array.isArray(chats)) return;
       const names = new Map(chats.map(c => [String(c.id), c.name || c.title || null]));
       ov.querySelectorAll('[data-storage-chat]').forEach(el => {
@@ -2069,28 +2192,38 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
      <b>, <span> 같은 인라인 태그 몇 개 섞인 마크다운 글까지 iframe으로 보내면
      마크다운이 통째로 죽으므로, 확실한 신호가 있을 때만 HTML로 본다. */
   const RX_HTML_DOC = /<\s*(html|head|body|style|script|svg|canvas|iframe|table|form|dialog|template|video|audio|object|embed)\b/i;
-  const RX_STYLED_TAG = /<[a-z][a-z0-9-]*\b[^>]*\sstyle\s*=\s*["'][^"']+["']/i;
-  const RX_CLASSED_TAG = /<[a-z][a-z0-9-]*\b[^>]*\sclass\s*=\s*["'][^"']+["']/i;
+  /* style= · class= 가 붙은 태그는 블록 태그일 때만 HTML 신호로 본다.
+     정규식 스크립트가 대사에 <span style="color:…"> 를 씌우는 일이 흔한데, 그것까지 HTML 로 보면
+     글 전체가 iframe 으로 가서 마크다운이 죽고 줄바꿈이 다 붙는다. 인라인 태그는 마크다운 쪽에서 살린다 */
+  const RX_DECORATED_TAG = /<([a-z][a-z0-9-]*)\b[^>]*\s(?:style|class)\s*=\s*["'][^"']+["']/gi;
+  const RX_INLINE_TAG_NAME = /^(b|i|em|strong|u|s|del|ins|code|br|small|mark|sup|sub|span|font|p|a|img|kbd|abbr)$/i;
+  function hasDecoratedBlockTag(t) {
+    for (const m of t.matchAll(RX_DECORATED_TAG)) if (!RX_INLINE_TAG_NAME.test(m[1])) return true;
+    return false;
+  }
   const RX_BLOCK_TAG  = /<\s*(div|section|article|main|header|footer|nav|aside|figure|figcaption|details|summary|blockquote)\b/gi;
   function looksLikeHtml(t) {
     if (RX_HTML_DOC.test(t)) return true;            // 문서/스타일/스크립트 → 확실한 HTML
-    if (RX_STYLED_TAG.test(t)) return true;          // style="..." 붙은 태그 → 디자인된 출력
-    if (RX_CLASSED_TAG.test(t)) return true;         // class="..." 붙은 태그 → 컴포넌트
+    if (hasDecoratedBlockTag(t)) return true;        // style · class 붙은 블록 태그 → 디자인된 출력
     const blocks = t.match(RX_BLOCK_TAG);
     return !!blocks && blocks.length >= 2;           // 블록 컨테이너 2개 이상 → 레이아웃
   }
 
   /* 마크다운 안에서 허용할 인라인 HTML 태그 (나머지는 이스케이프 상태 유지) */
-  const SAFE_TAGS = 'b|i|em|strong|u|s|del|ins|code|br|hr|small|mark|sup|sub|span|p|a|img|blockquote|kbd|abbr';
-  const RX_SAFE_TAG = new RegExp(`&lt;(/?)(${SAFE_TAGS})((?:\\s[^&]*?)?)\\s*(/?)&gt;`, 'gi');
+  const SAFE_TAGS = 'b|i|em|strong|u|s|del|ins|code|br|hr|small|mark|sup|sub|span|font|p|a|img|blockquote|kbd|abbr';
+  // 속성 안의 & 는 md() 가 &amp; 로 바꿔 둔다 — style="font-family:&quot;…&quot;" 같은 속성도 태그로 살린다
+  const RX_SAFE_TAG = new RegExp(`&lt;(/?)(${SAFE_TAGS})((?:\\s(?:[^&]|&amp;)*?)?)\\s*(/?)&gt;`, 'gi');
   // 위험 속성 제거: on*= 핸들러, javascript: URL
   const RX_ON_ATTR = /\s+on[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi;
   const RX_JS_URL  = /(href|src)\s*=\s*("|')\s*javascript:[^"']*\2/gi;
+  const RX_URL_ENTITY = /(href|src)\s*=\s*["'][^"']*&/i;   // 주소 속에 &문자참조 — javascript: 를 숨길 수 있어 태그로 살리지 않는다
   function unescapeSafeTags(html) {
-    return html.replace(RX_SAFE_TAG, (_m, slash, tag, attrs, selfClose) => {
-      let a = (attrs || '').replace(RX_ON_ATTR, '').replace(RX_JS_URL, '');
-      // 이스케이프됐던 따옴표 복원 (속성값 안에서만)
-      a = a.replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+    return html.replace(RX_SAFE_TAG, (m, slash, tag, attrs, selfClose) => {
+      const decoded = (attrs || '').replace(/&amp;/g, '&');
+      if (RX_URL_ENTITY.test(decoded)) return m;
+      let a = decoded.replace(RX_ON_ATTR, '').replace(RX_JS_URL, '');
+      // 이스케이프됐던 따옴표 복원 — 속성이 이미 진짜 따옴표로 감싸져 있으면 그 안의 &quot; 는 글자라 그대로 둔다
+      if (!/["']/.test(a)) a = a.replace(/&quot;/g, '"').replace(/&#39;/g, "'");
       return `<${slash}${tag}${a}${selfClose}>`;
     });
   }
@@ -2814,10 +2947,26 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
   const RX_BQ = /^[ \t]{0,3}&gt;(?=[ \t]|$|(?:&gt;)+(?:[ \t]|$))/;
   const RX_BQ_MARK = /^[ \t]{0,3}&gt;[ \t]?/;
   const RX_BQ_ESC = /^([ \t]{0,3})\\&gt;/;
+  /* 여러 줄을 감싼 <span style> · <font> — 줄마다 칸(div)으로 나뉘면 둘째 줄부터 색이 빠진다.
+     열린 채 줄이 끝나면 그 줄 끝에서 닫고 다음 줄 앞에서 다시 연다 (빈 줄을 건너도 이어진다) */
+  const RX_CARRY_TAG = /&lt;(\/?)(span|font)\b((?:\s(?:[^&]|&amp;)*?)?)\s*&gt;/gi;
+  function carryLine(carry, t) {
+    const s = carry.join('') + t;
+    const open = [];
+    for (const m of s.matchAll(RX_CARRY_TAG)) {
+      if (!m[1]) open.push({ tag: m[2].toLowerCase(), text: m[0] });
+      else { const k = open.map(o => o.tag).lastIndexOf(m[2].toLowerCase()); if (k >= 0) open.splice(k, 1); }
+    }
+    carry.length = 0;
+    carry.push(...open.map(o => o.text));
+    return s + open.slice().reverse().map(o => `&lt;/${o.tag}&gt;`).join('');
+  }
   function md(raw) {
     if (!raw) return '';
     const s0 = raw.replace(RX_AMP,'&amp;').replace(RX_LT,'&lt;').replace(RX_GT,'&gt;');
     const lines = s0.split('\n'); const out = []; let inUl = false;
+    const carry = [];
+    const _inlC = t => _inl(carryLine(carry, t));
     const closeList = () => { if (inUl) { out.push('</ul>'); inUl = false; } };
     for (let i = 0; i < lines.length; i++) {
       const escGt = RX_BQ_ESC.test(lines[i]);   // \> — 맨 앞이어도 인용이 아니다
@@ -2849,17 +2998,17 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
         out.push(`<blockquote class="${NS}-bq">${md(rawInner)}</blockquote>`);
         continue;
       }
-      if (RX_H4.test(ln))      { if(inUl){out.push('</ul>');inUl=false;} out.push(`<b class="${NS}-h4">${_inl(ln.slice(5))}</b>`); }
-      else if (RX_H3.test(ln)) { if(inUl){out.push('</ul>');inUl=false;} out.push(`<b class="${NS}-h3">${_inl(ln.slice(4))}</b>`); }
-      else if (RX_H2.test(ln)) { if(inUl){out.push('</ul>');inUl=false;} out.push(`<b class="${NS}-h2">${_inl(ln.slice(3))}</b>`); }
-      else if (RX_H1.test(ln)) { if(inUl){out.push('</ul>');inUl=false;} out.push(`<b class="${NS}-h1">${_inl(ln.slice(2))}</b>`); }
+      if (RX_H4.test(ln))      { if(inUl){out.push('</ul>');inUl=false;} out.push(`<b class="${NS}-h4">${_inlC(ln.slice(5))}</b>`); }
+      else if (RX_H3.test(ln)) { if(inUl){out.push('</ul>');inUl=false;} out.push(`<b class="${NS}-h3">${_inlC(ln.slice(4))}</b>`); }
+      else if (RX_H2.test(ln)) { if(inUl){out.push('</ul>');inUl=false;} out.push(`<b class="${NS}-h2">${_inlC(ln.slice(3))}</b>`); }
+      else if (RX_H1.test(ln)) { if(inUl){out.push('</ul>');inUl=false;} out.push(`<b class="${NS}-h1">${_inlC(ln.slice(2))}</b>`); }
       else if (RX_LI.test(ln)) {
         if(!inUl){out.push(`<ul class="${NS}-ul">`);inUl=true;}
         const nest=RX_LI_NEST.test(ln);
-        out.push(`<li${nest?' style="margin-left:12px"':''}>${_inl(ln.replace(RX_LI,''))}</li>`);
+        out.push(`<li${nest?' style="margin-left:12px"':''}>${_inlC(ln.replace(RX_LI,''))}</li>`);
       }
       else if (!ln.trim()) { if(inUl){out.push('</ul>');inUl=false;} out.push(`<div class="${NS}-gap"></div>`); }
-      else { if(inUl){out.push('</ul>');inUl=false;} out.push(`<div>${_inl(ln)}</div>`); }
+      else { if(inUl){out.push('</ul>');inUl=false;} out.push(`<div>${_inlC(ln)}</div>`); }
     }
     if (inUl) out.push('</ul>');
     // 마크다운 안에 섞인 인라인 HTML(<b>, <span style=…> 등)은 살려서 렌더
@@ -3362,6 +3511,27 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
     if (!r.ok) throw new Error(`GET ${path} → ${r.status}`);
     return r.json();
   }
+  /* 채팅 목록 — 엔진의 /chats 는 보내기 전에 빈 DM 방 정리를 돌고, 채팅마다 메타데이터(요약·게임 상태…)를
+     통째로 실어 보내 느리다. 쓰는 칸(id·이름·모드·수정 시각)만 남겨 기억해 두고, 동시에 여러 곳이 물어도 한 번만 받는다 */
+  const SK_CHATS = 'srb-v1-chats';
+  let _chatList = null, _chatListReq = null;
+  function cachedChatList() {
+    if (!_chatList) {
+      try { const a = JSON.parse(localStorage.getItem(SK_CHATS) || 'null'); if (Array.isArray(a)) _chatList = a; } catch {}
+    }
+    return _chatList;
+  }
+  function fetchChatList() {
+    if (!_chatListReq) {
+      _chatListReq = GET('/chats').then(list => {
+        if (!Array.isArray(list)) throw new Error('채팅 목록을 확인할 수 없습니다.');
+        _chatList = list.map(c => ({ id: c.id, name: c.name || '', mode: c.mode, updatedAt: c.updatedAt ?? null }));
+        try { localStorage.setItem(SK_CHATS, JSON.stringify(_chatList)); } catch {}
+        return _chatList;
+      }).finally(() => { _chatListReq = null; });
+    }
+    return _chatListReq;
+  }
   async function POST(path, body, signal) {
     const r = await fetch(`/api${path}`, {
       method:'POST', headers: HDR_J, body: JSON.stringify(body), signal,
@@ -3600,6 +3770,7 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
       skinPresets: st.skinPresets || {},
       regexScripts: st.regexScripts || [],
       contHistory: st.contHistory || [],
+      recentRuns: st.recentRuns || [],
       notifs: st.notifs || [],
       notifsResetAt: st.notifsResetAt || null,
       settings,
@@ -3609,6 +3780,7 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
   function mergeInitialServerState(data) {
     if (!data || typeof data !== 'object') return;
     const localToggle = serverSyncEnabled();
+    const localBefore = serverSharedStateSnapshot();
     // mergeStoredList의 두 번째 인수가 같은 ID에서 이긴다 → 서버 우선.
     st.library = mergeStoredList(st.library, data.library);
     st.deletedForms = mergeStoredList(st.deletedForms || [], Array.isArray(data.deletedForms) ? data.deletedForms : []);
@@ -3621,6 +3793,11 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
     st.skinPresets = { ...(st.skinPresets || {}), ...(data.skinPresets || {}) };
     st.regexScripts = mergeStoredList(st.regexScripts, data.regexScripts);
     st.contHistory = mergeStoredList(st.contHistory, data.contHistory).slice(0, 8);
+    st.recentRuns = trimRecentRuns(mergeStoredList(st.recentRuns || [], Array.isArray(data.recentRuns) ? data.recentRuns : []));
+    // 다른 기기에서 지운 것 · 이 기기에서 지웠지만 못 올린 것은 합집합에서 뺀다
+    const merged = dropDeletedShared(
+      Object.fromEntries([...SHARED_LIST_KEYS, ...SHARED_MAP_KEYS].map(k => [k, st[k]])), localBefore, data);
+    for (const k of [...SHARED_LIST_KEYS, ...SHARED_MAP_KEYS]) st[k] = merged[k];
     applyServerNotifs(data);
     applyServerSettings(data.settings);
     st.settings.serverSyncEnabled = localToggle;
@@ -3639,6 +3816,8 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
     st.skinPresets = (data.skinPresets && typeof data.skinPresets === 'object') ? data.skinPresets : {};
     st.regexScripts = Array.isArray(data.regexScripts) ? data.regexScripts : [];
     st.contHistory = Array.isArray(data.contHistory) ? data.contHistory.slice(0, 8) : [];
+    // 예전 서버 상태에는 이 칸이 없다 — 그때는 이 기기 것을 둔다
+    if (Array.isArray(data.recentRuns)) st.recentRuns = trimRecentRuns(mergeStoredList(st.recentRuns || [], data.recentRuns));
     // 구버전에서 저장된 서버 상태에는 기본 양식이 없다. 통째로 교체한 뒤 다시 확보한다.
     ensureSeedForms();
     const notifsAhead = applyServerNotifs(data);
@@ -3677,7 +3856,9 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
   async function putServerStateNow() {
     if (!serverSyncEnabled() || !_serverSyncReady || _serverSyncApplying) return false;
     clearTimeout(_serverSyncStateTimer); _serverSyncStateTimer = null;
-    const saved = await PUT('/sorbet/state', { data: serverSharedStateSnapshot() });
+    const snap = serverSharedStateSnapshot();
+    const saved = await PUT('/sorbet/state', { data: snap });
+    setStateSyncBase(snap);
     _serverStateUpdatedAt = saved?.updatedAt || _serverStateUpdatedAt;
     _serverSyncLastAt = Date.now();
     _serverSyncLastError = '';
@@ -3701,11 +3882,13 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
     const data = resultSnapshotForChat(chatId);
     if (!Object.keys(data).length) {
       await DEL(`/sorbet/results/${encodeURIComponent(chatId)}`);
+      setResultSyncBase(chatId, {});
       _knownServerResultChats.delete(chatId);
       _serverResultUpdatedAt.delete(chatId);
       return true;
     }
     const saved = await PUT(`/sorbet/results/${encodeURIComponent(chatId)}`, { data });
+    setResultSyncBase(chatId, data);
     _knownServerResultChats.add(chatId);
     if (saved?.updatedAt) _serverResultUpdatedAt.set(chatId, saved.updatedAt);
     _serverSyncLastAt = Date.now();
@@ -3716,14 +3899,19 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
   async function loadAllServerResults(manifest) {
     const out = {};
     const rows = Array.isArray(manifest?.chats) ? manifest.chats : [];
-    for (const row of rows) {
-      if (!row?.chatId) continue;
-      const saved = await GET(`/sorbet/results/${encodeURIComponent(row.chatId)}`);
-      if (!saved?.exists || !saved.data || typeof saved.data !== 'object') continue;
-      for (const [qrId, list] of Object.entries(saved.data)) {
-        if (Array.isArray(list) && list.length) (out[qrId] ??= {})[row.chatId] = list;
-      }
-      _serverResultUpdatedAt.set(row.chatId, saved.updatedAt || row.updatedAt || '');
+    // 채팅마다 하나씩 차례로 받으면 채팅이 많은 폰에서 수십 초 걸린다 — 6개씩 함께 받는다
+    const valid = rows.filter(row => row?.chatId);
+    for (let i = 0; i < valid.length; i += 6) {
+      const batch = valid.slice(i, i + 6);
+      const got = await Promise.all(batch.map(row => GET(`/sorbet/results/${encodeURIComponent(row.chatId)}`)));
+      batch.forEach((row, k) => {
+        const saved = got[k];
+        if (!saved?.exists || !saved.data || typeof saved.data !== 'object') return;
+        for (const [qrId, list] of Object.entries(saved.data)) {
+          if (Array.isArray(list) && list.length) (out[qrId] ??= {})[row.chatId] = list;
+        }
+        _serverResultUpdatedAt.set(row.chatId, saved.updatedAt || row.updatedAt || '');
+      });
     }
     _knownServerResultChats = new Set(rows.map(row => row?.chatId).filter(Boolean));
     return out;
@@ -3777,7 +3965,8 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
           _serverStateUpdatedAt = serverState.updatedAt || null;
         }
         // 현재 브라우저에만 있는 항목은 추가하고, 같은 결과 ID는 서버가 이긴다.
-        st.results = mergeStoredResults(st.results, serverResults);
+        const localResults = st.results;
+        st.results = dropDeletedResults(mergeStoredResults(localResults, serverResults), localResults, serverResults);
         await persistMergedServerCache();
       } finally {
         _serverSyncApplying = false;
@@ -3785,8 +3974,17 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
 
       _serverSyncReady = true;
       await putServerStateNow();
-      for (const chatId of resultChatIds()) await putServerResultsForChat(chatId);
-      const stats = await verifyServerSyncSnapshot();
+      // 서버본과 같은 채팅은 다시 올리지 않는다 — 켤 때마다 전부 올리고 전부 다시 받느라 폰에서 탭이 한참 안 열렸다
+      for (const chatId of resultChatIds()) {
+        if (JSON.stringify(resultSnapshotForChat(chatId)) === JSON.stringify(resultSnapshotForChat(chatId, serverResults))) continue;
+        await putServerResultsForChat(chatId);
+      }
+      // 이제 이 기기와 서버가 같다 — 다음 합치기의 기준으로 남긴다(서버에서 빠진 채팅의 기준도 지운다)
+      _syncBase.results = {};
+      for (const chatId of resultChatIds()) setResultSyncBase(chatId, resultSnapshotForChat(chatId), { save: false });
+      saveSyncBase();
+      const stats = notify ? await verifyServerSyncSnapshot()
+        : { qrCount: st.library.length, resultCount: storedResultCount(st.results), chatCount: storedChatCount(st.results) };
       _serverSyncLastAt = Date.now();
       _serverSyncLastError = '';
       startServerSyncPolling();
@@ -3806,6 +4004,26 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
     }
   }
 
+  /* 바뀐 것만 받는다. 서버의 sync-meta 는 상태 · 결과의 바뀐 시각만 준다 — 예전엔 20초마다 공용 상태 전체를 받고 나서야
+     안 바뀐 걸 알았다. 서버 모듈이 옛 판이라 이 주소가 없으면(404) 예전처럼 둘 다 받는다 */
+  let _syncMetaMissing = false;
+  async function fetchServerChanges() {
+    if (!_syncMetaMissing) {
+      try {
+        const meta = await GET('/sorbet/sync-meta');
+        const st0 = meta?.state || {};
+        const serverState = st0.exists && st0.updatedAt && st0.updatedAt !== _serverStateUpdatedAt
+          ? await GET('/sorbet/state') : null;
+        return { serverState, manifest: { chats: Array.isArray(meta?.chats) ? meta.chats : [] } };
+      } catch (e) {
+        if (!/→ 404/.test(String(e?.message))) throw e;
+        _syncMetaMissing = true;
+      }
+    }
+    const [serverState, manifest] = await Promise.all([GET('/sorbet/state'), GET('/sorbet/results')]);
+    return { serverState, manifest };
+  }
+
   async function pullServerChanges() {
     if (!serverSyncEnabled() || !_serverSyncReady || _serverSyncBusy || _serverSyncApplying) return;
     /* 생성이 돌고 있으면 당기지 않는다. 결과는 생성이 끝난 뒤 트리에 push 되는데,
@@ -3817,23 +4035,23 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
       // 로컬 예약 저장을 먼저 끝내야 폴링이 직전 로컬 수정을 되돌리지 않는다.
       if (_serverSyncStateTimer) await putServerStateNow();
       if (_dirtyChats.size) await flushResults();
-      const [serverState, manifest] = await Promise.all([
-        GET('/sorbet/state'),
-        GET('/sorbet/results'),
-      ]);
+      const { serverState, manifest } = await fetchServerChanges();
       let changed = false, notifsAhead = false;
       _serverSyncApplying = true;
       try {
         if (serverState?.exists && serverState.updatedAt && serverState.updatedAt !== _serverStateUpdatedAt) {
           notifsAhead = replaceSharedStateFromServer(serverState.data);
+          setStateSyncBase(serverSharedStateSnapshot());
           _serverStateUpdatedAt = serverState.updatedAt;
           changed = true;
         }
         const rows = Array.isArray(manifest?.chats) ? manifest.chats : [];
         const nextKnown = new Set(rows.map(row => row?.chatId).filter(Boolean));
+        // 아직 못 올린 채팅(_unsentChats)은 서버본으로 갈아끼우지 않는다 — 이 기기의 새 결과가 지워진다
         for (const removedChatId of _knownServerResultChats) {
-          if (!nextKnown.has(removedChatId)) {
+          if (!nextKnown.has(removedChatId) && !_unsentChats.has(removedChatId)) {
             replaceResultChat(removedChatId, {});
+            setResultSyncBase(removedChatId, {});
             if (_idbOK) await idbDel(removedChatId);
             _serverResultUpdatedAt.delete(removedChatId);
             changed = true;
@@ -3841,9 +4059,11 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
         }
         for (const row of rows) {
           if (!row?.chatId || _serverResultUpdatedAt.get(row.chatId) === row.updatedAt) continue;
+          if (_unsentChats.has(row.chatId)) continue;
           const saved = await GET(`/sorbet/results/${encodeURIComponent(row.chatId)}`);
-          if (!saved?.exists) continue;
+          if (!saved?.exists || _unsentChats.has(row.chatId)) continue;
           replaceResultChat(row.chatId, saved.data || {});
+          setResultSyncBase(row.chatId, saved.data || {});
           if (_idbOK) await idbPut(row.chatId, saved.data || {});
           _serverResultUpdatedAt.set(row.chatId, saved.updatedAt || row.updatedAt || '');
           changed = true;
@@ -3853,6 +4073,8 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
       } finally {
         _serverSyncApplying = false;
       }
+      // 받아 오는 동안 끝난 생성은 올리기를 미뤄 뒀다 — 바로 보낸다
+      if (_dirtyChats.size) { clearTimeout(_flushTimer); _flushTimer = setTimeout(flushResults, 0); }
       if (changed) renderNotifDot();
       if (changed && panelOpen) { renderBody(); }
       // 이 기기에만 있던 알림(다른 기기가 모르고 덮어쓴 것)은 다시 올린다
@@ -3877,10 +4099,15 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
     stopServerSyncPolling();
     if (!serverSyncEnabled() || _disposed) return;
     _serverSyncPollTimer = setInterval(() => {
+      if (document.visibilityState === 'hidden') return;   // 탭이 뒤에 있으면 쉰다 — 돌아오면 아래에서 바로 받는다
       if (_serverSyncReady) pullServerChanges();
       else enableAndMigrateServerSync();
     }, 20000);
   }
+  document.addEventListener('visibilitychange', () => {
+    if (_disposed || document.visibilityState !== 'visible' || !_serverSyncPollTimer) return;
+    if (_serverSyncReady) pullServerChanges();
+  });
 
   function disableServerSyncRuntime() {
     clearTimeout(_serverSyncStateTimer); _serverSyncStateTimer = null;
@@ -3919,13 +4146,17 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
     }
     return null;
   }
+  /* 저장값 · 화면에서 못 찾을 때만 쓴다. 자동 감지는 1.5초마다 도는데 채팅 목록은 무거우니 30초 동안은 지난 답을 쓴다 */
+  let _apiChatId = null, _apiChatAt = 0;
   async function chatIdFromAPI() {
+    if (Date.now() - _apiChatAt < 30000) return _apiChatId;
+    _apiChatAt = Date.now();
     try {
-      const list = await GET('/chats');
+      const list = await fetchChatList();
       if (Array.isArray(list) && list.length)
-        return list.sort((a,b)=>new Date(b.updatedAt??0)-new Date(a.updatedAt??0))[0]?.id??null;
+        _apiChatId = [...list].sort((a,b)=>new Date(b.updatedAt??0)-new Date(a.updatedAt??0))[0]?.id??null;
     } catch {}
-    return null;
+    return _apiChatId;
   }
   async function resolveActiveChatId() {
     return chatIdFromStorage() || chatIdFromDOM() || await chatIdFromAPI();
@@ -4226,6 +4457,9 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
    * § 7  채팅 컨텍스트 + 추가된 QR 목록
    * ══════════════════════════════════════════════════════════ */
   async function loadChatContext(chatId) {
+    /* 페르소나 목록 · 메시지 수는 채팅 정보와 상관없으니 먼저 같이 보내 두고, 캐릭터 카드는 채팅을 받은 뒤 한꺼번에 묻는다 */
+    const personaReq = GET('/characters/personas/list').catch(() => null);
+    const cntReq = GET(`/chats/${chatId}/message-count`).catch(e => { console.warn('[소르베] 메시지 수 조회 실패:', e.message); return null; });
     const chat = await GET(`/chats/${chatId}`);
     let chatName = chat.name || chatId.slice(0,8);
     let charName = 'Character', userName = 'User';
@@ -4237,30 +4471,34 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
     if (!Array.isArray(charIds)) charIds = charIds ? [charIds] : [];
     const charNames = [];
     const charList = [];   // [{id, name}] — 참고 캐릭터 선택 UI용
-    for (const cid of charIds) {
-      try {
-        const c = await GET(`/characters/${cid}`);
-        let data = c.data;
-        if (typeof data === 'string') { try { data = JSON.parse(data); } catch {} }
-        const nm = c.name ?? data?.name ?? data?.data?.name;
-        const dsc = c.comment ?? data?.creator_notes ?? data?.data?.creator_notes ?? '';
-        if (nm) { charNames.push(nm); charList.push({ id: cid, name: nm, avatar: c.avatarPath || data?.avatarPath || null, desc: String(dsc || '') }); }
-      } catch {}
-    }
+    // 예전엔 카드 · 페르소나 · 메시지 수를 하나씩 차례로 기다려 창이 늦게 떴다
+    const [cards, personaList, cnt] = await Promise.all([
+      Promise.all(charIds.map(cid => GET(`/characters/${cid}`).catch(() => null))),
+      personaReq, cntReq,
+    ]);
+    charIds.forEach((cid, i) => {
+      const c = cards[i];
+      if (!c) return;
+      let data = c.data;
+      if (typeof data === 'string') { try { data = JSON.parse(data); } catch {} }
+      const nm = c.name ?? data?.name ?? data?.data?.name;
+      const dsc = c.comment ?? data?.creator_notes ?? data?.data?.creator_notes ?? '';
+      if (nm) { charNames.push(nm); charList.push({ id: cid, name: nm, avatar: c.avatarPath || data?.avatarPath || null, desc: String(dsc || '') }); }
+    });
     if (charNames.length) charName = charNames.join(', ');  // 표시용 (다중이면 콤마)
     // 페르소나(유저) 이름 — chat 우선, 없으면 활성 페르소나 목록에서
     const pid = chat.personaId ?? chat.metadata?.personaId ?? chat.activePersonaId;
     // GET /personas/:id 는 마리나라에 없는 경로(항상 404) → 목록에서 직접 찾는다.
     // pid 가 있는데 목록에 없으면 전역 활성 페르소나로 대체하지 않는다(교차 오염 방지).
-    try {
-      const list = await GET('/characters/personas/list');
+    {
+      const list = personaList;   // 실패하면 null — 이름은 'User' 로 둔다
       if (Array.isArray(list)) {
         // Marinara DB는 isActive를 "true"/"false" 문자열로 보낸다.
         // "false"도 JS에서는 truthy라서 단순 x.isActive는 첫 비활성 페르소나를 고를 수 있다.
         const p = pid ? list.find(x => x.id === pid) : list.find(x => marinaraTrue(x?.isActive));
         if (p?.name) userName = p.name;
       }
-    } catch {}
+    }
 
     // 추가된 QR ID 목록 — 서버 metadata 가 정답. 합집합(union) 금지.
     // 합집합은 한 번 잘못 섞인 QR이 절대 빠지지 않아 오염을 영구화한다.
@@ -4283,18 +4521,43 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
     //    전환에 실제로 필요한 건 총 개수(#N 배지)뿐이므로 message-count 만 부른다.
     //    유저/AI 분리 수치는 배지 툴팁에만 쓰이므로 백그라운드로 미룬다.
     let turnCount = 0, totalMsgs = 0, userMsgs = 0;
-    try {
-      const cnt = await GET(`/chats/${chatId}/message-count`);
-      if (cnt && typeof cnt.count === 'number') totalMsgs = cnt.count;
-    } catch (e) {
-      console.warn('[소르베] 메시지 수 조회 실패:', e.message);
-    }
+    if (cnt && typeof cnt.count === 'number') totalMsgs = cnt.count;
 
     return { chatId, chatName, charName, userName, mode, turnCount, totalMsgs, userMsgs,
              attachedIds: merged,
              // /generate/raw 는 connectionId 가 필수다 (dryRun 처럼 채팅에서 알아서 찾아주지 않는다)
              connectionId: chat.connectionId ?? chat.metadata?.connectionId ?? null,
              charList, groupId: chat.groupId ?? null };
+  }
+
+  /* 채팅 정보(이름 · 캐릭터 · 페르소나 · 메시지 수)를 기억해 둔다. 창을 열거나 채팅을 바꿀 때 이걸로 바로 그리고,
+     새로 받은 정보가 오면 바꾼다. 붙인 양식 목록은 여기 넣지 않는다 — 그건 이 기기 attachedByChat 이 맡는다 */
+  const SK_CTX = 'srb-v1-chatctx';
+  const CTX_KEEP = 20;
+  let _ctxMemo = null;
+  function ctxMemo() {
+    if (!_ctxMemo) {
+      try { const m = JSON.parse(localStorage.getItem(SK_CTX) || 'null'); _ctxMemo = m && typeof m === 'object' ? m : {}; }
+      catch { _ctxMemo = {}; }
+    }
+    return _ctxMemo;
+  }
+  function rememberCtx(ctx) {
+    if (!ctx?.chatId) return;
+    const { attachedIds, ...rest } = ctx;
+    const m = ctxMemo();
+    delete m[ctx.chatId];
+    m[ctx.chatId] = { ...rest, at: Date.now() };
+    const ids = Object.keys(m);
+    for (const id of ids.slice(0, Math.max(0, ids.length - CTX_KEEP))) delete m[id];
+    try { localStorage.setItem(SK_CTX, JSON.stringify(m)); } catch {}
+  }
+  function rememberedCtx(chatId) {
+    const c = chatId ? ctxMemo()[chatId] : null;
+    if (!c) return null;
+    const attached = (Array.isArray(st.attachedByChat?.[chatId]) ? st.attachedByChat[chatId] : [])
+      .filter(id => st.library.some(q => q.id === id));
+    return { ...c, attachedIds: attached };
   }
 
   // 채팅 metadata에 추가된 QR 목록 저장
@@ -4436,18 +4699,25 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
     const all = (chatCache?.chatId === chatId ? chatCache.charList : null) || [];
     const wanted = Array.isArray(refCharIds) ? refCharIds.filter(id => all.some(c => c.id === id)) : [];
     const ids = wanted.length ? wanted : all.map(c => c.id);
+    // 카드 · 채팅 · 페르소나 목록을 한꺼번에 묻는다
+    const [cardRows, chatRow, personaRows] = await Promise.all([
+      Promise.all(ids.map(cid => GET(`/characters/${cid}`).catch(() => null))),
+      GET(`/chats/${chatId}`).catch(() => null),
+      GET('/characters/personas/list').catch(() => null),
+    ]);
     const characters = [];
-    for (const cid of ids) {
-      try { characters.push(refCard(await GET(`/characters/${cid}`))); }
-      catch (e) { warnings.push(`캐릭터 카드를 읽지 못해 제외했습니다 (${cid.slice(0, 8)}).`); }
-    }
+    ids.forEach((cid, i) => {
+      if (cardRows[i]) characters.push(refCard(cardRows[i]));
+      else warnings.push(`캐릭터 카드를 읽지 못해 제외했습니다 (${cid.slice(0, 8)}).`);
+    });
 
     // 페르소나 — GET /personas/:id 는 없는 경로다. 목록에서 찾는다(§7과 같은 규칙).
     const players = [];
     try {
-      const chat = await GET(`/chats/${chatId}`);
+      const chat = chatRow;
+      if (!chat || !personaRows) throw new Error('페르소나를 읽지 못함');
       const pid = chat?.personaId ?? chat?.metadata?.personaId ?? chat?.activePersonaId;
-      const list = await GET('/characters/personas/list');
+      const list = personaRows;
       if (Array.isArray(list)) {
         const p = pid ? list.find(x => x.id === pid) : list.find(x => marinaraTrue(x?.isActive));
         if (p) players.push(refCard(p));
@@ -4555,11 +4825,17 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
       // 요약은 RP 채팅에만 있고, 고급 기억을 켠 채팅은 엔진이 요약 대신 대화 전체를 쓴다
       if (chat?.mode !== 'roleplay' || meta.advancedMemory?.enabled === true) return null;
       let c = _hiddenCache.get(chatId);
-      // 눈 감김은 메시지 수를 바꾸지 않으므로 수가 같아도 30초가 지나면 다시 받는다
-      if (!c || c.count !== count || Date.now() - c.at > 30000) {
-        const rows = await GET(`/chats/${chatId}/messages`);
-        const extraOf = (m) => { let e = m?.extra; if (typeof e === 'string') { try { e = JSON.parse(e); } catch { e = null; } } return e || {}; };
-        c = { count, at: Date.now(), flags: (Array.isArray(rows) ? rows : []).map(m => extraOf(m).hiddenFromAI === true) };
+      const extraOf = (m) => { let e = m?.extra; if (typeof e === 'string') { try { e = JSON.parse(e); } catch { e = null; } } return e || {}; };
+      const flagsOf = (rows) => (Array.isArray(rows) ? rows : []).map(m => extraOf(m).hiddenFromAI === true);
+      /* 전체 메시지는 무겁다 — 긴 방이면 생성 시작이 그만큼 늦었다. 메시지가 늘기만 했으면 늘어난 만큼만 받아 잇고,
+         통째로는 2분에 한 번만 다시 받는다(앞 메시지 눈 감김은 수를 바꾸지 않으니 그때 따라잡는다) */
+      const stale = !c || Date.now() - c.at > 120000 || count < c.count;
+      if (stale) {
+        c = { count, at: Date.now(), flags: flagsOf(await GET(`/chats/${chatId}/messages`)) };
+        _hiddenCache.set(chatId, c);
+      } else if (count > c.count) {
+        const tail = flagsOf(await GET(`/chats/${chatId}/messages?limit=${count - c.count}`));
+        c = { ...c, count, flags: [...c.flags, ...tail] };
         _hiddenCache.set(chatId, c);
       }
       const flags = anchorTotal > 0 ? c.flags.slice(0, anchorTotal) : c.flags;
@@ -5203,7 +5479,11 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
     if (!runId) throw new Error('서버가 runId 를 주지 않았습니다. sorbet-runs 모듈을 확인하세요.');
 
     /* 여기서 바로 저장한다. 이 줄 다음에 탭이 닫혀도 다시 켜면 회수할 수 있어야 한다. */
-    if (pending) rememberPendingRun({ ...pending, runId, startedAt: new Date().toISOString() });
+    if (pending) {
+      const desc = { ...pending, runId, startedAt: new Date().toISOString() };
+      st.recentRuns = trimRecentRuns([{ ...desc, id: runId }, ...(st.recentRuns || []).filter(r => r.id !== runId)]);
+      rememberPendingRun(desc);   // 여기서 saveSt → 서버 공용 상태에도 실린다
+    }
 
     // 중단은 우리 소켓을 끊는 것만으로는 안 된다 — 서버에게 직접 알려야 한다.
     const onAbort = () => {
@@ -5238,6 +5518,15 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
     st.pendingRuns = [desc, ...st.pendingRuns.filter(r => r.runId !== desc.runId)].slice(0, 20);
     saveSt();
   }
+  /* 서버는 끝난 생성을 24시간 둔다 — 그보다 오래된 기록은 되살릴 원문이 없어 버린다 */
+  function trimRecentRuns(list) {
+    const now = Date.now();
+    return (Array.isArray(list) ? list : [])
+      .filter(r => r?.id && now - (Date.parse(r.startedAt) || 0) < RECENT_RUNS_TTL_MS)
+      .sort((a, b) => (Date.parse(b.startedAt) || 0) - (Date.parse(a.startedAt) || 0))
+      .slice(0, RECENT_RUNS_MAX);
+  }
+
   function forgetPendingRun(runId) {
     if (!Array.isArray(st.pendingRuns)) return;
     const next = st.pendingRuns.filter(r => r.runId !== runId);
@@ -5269,8 +5558,11 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
     const { qrId, chatId } = desc;
     if (!qrId || !chatId || !content) return false;
     if (treeHasRun(qrId, chatId, desc.runId)) return false;
+    // 원래 붙었던 id 로 붙인다 — 이어쓴 뒤 편의 parentId 가 이 id 를 가리킨다. 그 id 가 이미 있으면 같은 결과다
+    if (desc.nodeId && findSegRoot(qrId, chatId, desc.nodeId)) return false;
     const node = {
-      id: uid(), ts: new Date().toISOString(), runId: desc.runId,
+      id: desc.nodeId || uid(), ts: new Date().toISOString(), runId: desc.runId,
+      recovered: true,   // 같은 생성이 원래 자리에서도 돌아오면 원래 것을 남긴다(dedupeRunCopies)
       chatId, chatName: desc.chatName,
       content,
       isNew: true,
@@ -5796,12 +6088,16 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
   /* ── 일괄 이름짓기 ─────────────────────────────────────────
    * 지금 채팅에서 제목이 없는 결과 묶음에 AI 가 제목을 붙인다. 제목은 루트(1번 타래 =
    * 이어쓰기가 없으면 원문)에 붙는 것이므로 루트 본문만 보고 짓는다.
+   * 본문은 자르지 않고 끝까지 보낸다 — 앞부분만 보내면 도입부만 담은 제목이 나왔다.
+   * 주문 이름 같은 다른 정보는 붙이지 않는다. 출력된 글만 보고 짓게.
    * 결과마다 따로 부르지 않고 여러 개를 한 번에 물어 호출 수를 줄인다.
    *
    * 지시문은 둘로 나눈다 — 사용자가 고치는 "어떤 제목인가"와, 고칠 수 없는 "출력 형식".
    * 형식까지 고치게 두면 번호를 못 찾아 제목이 엉뚱한 결과에 붙는다. */
   const BATCH_TITLE_PROMPT_DEFAULT = [
     '각 글에 제목을 하나씩 붙인다.',
+    '- 글을 처음부터 끝까지 다 읽고, 글 전체를 대표하는 제목을 짓는다. 도입부만 보고 짓지 않는다.',
+    '- 글에 실제로 나온 내용만 근거로 삼는다. 글 밖의 정보는 짐작해 넣지 않는다.',
     '- 무슨 내용인지 한눈에 알 수 있게, 단순하고 명확하게 쓴다.',
     '- 15자 이내의 한국어 명사구로 쓴다. 핵심 인물·사건·소재만 담는다.',
     '- 수식어, 감탄, 부제, 따옴표, 문장부호를 붙이지 않는다.',
@@ -5815,33 +6111,45 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
     '이 작업은 사용자가 쓴 창작 소설 원고들에 목록용 제목(이름표)을 붙이는 정리 작업이다. '
     + '글에 성적인 장면이나 폭력 같은 수위 있는 내용이 있어도, 내용을 새로 쓰거나 묘사하거나 평가하지 않고 제목만 붙이면 되므로 거절하지 않는다. '
     + '노골적인 낱말은 제목에 쓰지 않고, 인물·관계·사건 중심의 담백한 제목으로 짓는다.';
-  const BATCH_TITLE_CHUNK = 12;       // 한 번의 호출에 묻는 결과 수
-  const BATCH_TITLE_EXCERPT = 1200;   // 결과 하나당 보내는 본문 글자 수
+  const BATCH_TITLE_CHUNK = 12;          // 한 번의 호출에 묻는 결과 수(최대)
+  const BATCH_TITLE_CHUNK_CHARS = 40000; // 한 번의 호출에 보내는 본문 글자 수 합. 넘으면 다음 호출로, 글 하나가 이보다 길면 그 글만 따로
 
   function batchTitlePrompt() {
     return (st.settings.batchTitlePrompt || '').trim() || BATCH_TITLE_PROMPT_DEFAULT;
   }
-  // 지금 채팅에서 제목이 없는 루트 결과
-  function untitledRoots(chatId) {
+  // 지금 채팅의 루트 결과 — titled 가 false 면 제목 없는 것, true 면 제목 있는 것(다시 짓기)
+  function rootsForTitle(chatId, titled = false) {
     const out = [];
     for (const q of (st.library || [])) {
       for (const root of (st.results[q.id]?.[chatId] || [])) {
-        if (!(root.title && root.title.trim()) && String(root.content || '').trim()) {
-          out.push({ qrId: q.id, qrName: q.label || '', root });
+        if (!!(root.title && root.title.trim()) === titled && String(root.content || '').trim()) {
+          out.push({ qrId: q.id, qrName: q.label || '', root, oldTitle: (root.title || '').trim() });
         }
       }
     }
     return out;
   }
-  // HTML·코드 표시를 걷어 낸 앞부분 — 제목을 짓는 데는 글만 있으면 된다
+  const untitledRoots = (chatId) => rootsForTitle(chatId, false);
+  // HTML·코드 표시를 걷어 낸 본문 전체 — 제목을 짓는 데는 글만 있으면 된다
   function titleExcerpt(text) {
     return String(text || '')
       .replace(/<(style|script)\b[\s\S]*?<\/\1\s*>/gi, ' ')
       .replace(/<[^>]+>/g, ' ')
       .replace(/```/g, ' ')
       .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, BATCH_TITLE_EXCERPT);
+      .trim();
+  }
+  // 글 수 · 글자 수 합 둘 다 넘지 않게 묶는다
+  function titleChunks(targets) {
+    const out = [];
+    let cur = [], chars = 0;
+    for (const it of targets) {
+      const n = titleExcerpt(it.root.content).length;
+      if (cur.length && (cur.length >= BATCH_TITLE_CHUNK || chars + n > BATCH_TITLE_CHUNK_CHARS)) { out.push(cur); cur = []; chars = 0; }
+      cur.push(it); chars += n;
+    }
+    if (cur.length) out.push(cur);
+    return out;
   }
   function parseBatchTitles(text, count) {
     const titles = new Array(count).fill('');
@@ -5857,7 +6165,7 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
   async function requestBatchTitles(chatId, items, signal) {
     const directive = [
       BATCH_TITLE_FRAME, '', batchTitlePrompt(), '', BATCH_TITLE_FORMAT, '',
-      ...items.map((it, i) => `===== ${i + 1}번 글${it.qrName ? ` (${it.qrName})` : ''} =====\n${titleExcerpt(it.root.content)}`),
+      ...items.map((it, i) => `===== ${i + 1}번 글 =====\n${titleExcerpt(it.root.content)}`),
       '===== 끝 =====',
     ].join('\n');
     // 번역과 같은 가벼운 경로 — 히스토리·캐릭터·페르소나·프리셋 없이 지시문만 보낸다
@@ -5942,33 +6250,71 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
      진행 상태는 여기(모듈)에 두고, 그릴 때와 진행할 때마다 지금 칸을 찾아 고친다 */
   function syncBatchTitleUi() {
     const btn = document.getElementById(`${NS}-s-batchtitle-run`);
+    const redoBtn = document.getElementById(`${NS}-s-batchtitle-redo`);
     const stat = document.getElementById(`${NS}-s-batchtitle-stat`);
+    // 돌고 있을 때는 '제목 짓기' 자리가 '중단'이 되고, 다시 짓기는 잠근다(두 일을 겹쳐 돌리지 않게)
     if (btn) btn.textContent = _batchTitleCtrl ? '중단' : '제목 짓기';
+    if (redoBtn) redoBtn.disabled = !!_batchTitleCtrl;
     if (!stat) return;
     if (_batchTitleCtrl) { stat.textContent = `제목 짓는 중… ${_batchTitleDone}/${_batchTitleTotal}`; return; }
     const cid = chatCache?.chatId;
-    stat.textContent = cid ? `제목 없는 결과 ${untitledRoots(cid).length}개` : '채팅이 열려 있지 않습니다';
+    const kept = cid ? titleDraftProposals(cid).length : 0;
+    if (btn) btn.textContent = kept ? '받은 제목 보기' : '제목 짓기';
+    // 검토 안 한 제목이 남아 있으면 그것부터 보게 한다 — 다시 짓기로 덮어쓰지 않게
+    if (redoBtn) redoBtn.disabled = !cid || !!kept || !rootsForTitle(cid, true).length;
+    stat.textContent = !cid ? '채팅이 열려 있지 않습니다'
+      : kept ? `검토 안 한 제목 ${kept}개` : `제목 없는 결과 ${untitledRoots(cid).length}개`;
+  }
+  /* 받은 제목은 검토 창에서 적용하거나 취소할 때까지 저장해 둔다 — 예전엔 메모리에만 있어서
+     검토 창이 닫히면(창 닫기 · 새로고침 · 폰에서 브라우저를 내림) 받은 제목이 전부 사라졌다 */
+  /* oldTitle — 짓기를 시작할 때의 제목(제목 없던 결과는 빈 문자열). 검토하는 사이 제목이
+     바뀐 결과는 건드리지 않으려고 같이 둔다 */
+  function saveTitleDraft(chatId, proposals, total) {
+    try {
+      localStorage.setItem(SK_TITLES, JSON.stringify({ chatId, total,
+        items: proposals.map(p => ({ qrId: p.qrId, qrName: p.qrName, rid: p.root.id, title: p.title, oldTitle: p.oldTitle || '' })) }));
+    } catch {}
+  }
+  function readTitleDraft() {
+    try { const d = JSON.parse(localStorage.getItem(SK_TITLES) || 'null'); return d && Array.isArray(d.items) ? d : null; }
+    catch { return null; }
+  }
+  function clearTitleDraft() { try { localStorage.removeItem(SK_TITLES); } catch {} }
+  // 그사이 지워졌거나 제목이 바뀐 결과는 뺀다
+  function titleDraftProposals(chatId) {
+    const d = readTitleDraft();
+    if (!d || d.chatId !== chatId) return [];
+    return d.items.map(it => {
+      const root = findSegRoot(it.qrId, chatId, it.rid)?.seg;
+      const oldTitle = it.oldTitle || '';
+      return root && (root.title || '').trim() === oldTitle
+        ? { qrId: it.qrId, qrName: it.qrName, root, title: it.title, oldTitle } : null;
+    }).filter(Boolean);
   }
   /* 제목을 받아 오기만 한다. 바로 붙이지 않고 검토 창에서 고른 것만 적용한다 —
      AI 가 지은 제목이 마음에 안 들 수 있는데, 한 번 붙으면 '제목 없는 결과'에서
-     빠져서 다시 돌려도 대상이 되지 않는다. */
-  async function runBatchTitles(onApplied) {
+     빠져서 다시 돌려도 대상이 되지 않는다.
+     redo — 제목이 이미 있는 결과를 다시 짓는다. 검토 창에서 고른 것만 바뀐다. */
+  async function runBatchTitles(onApplied, { redo = false } = {}) {
     if (_batchTitleCtrl) { _batchTitleCtrl.abort(); return; }   // 돌고 있을 때 다시 누르면 중단
     const chatId = chatCache?.chatId;
     if (!chatId) { toast('채팅이 열려 있어야 합니다.', 'error'); return; }
-    const targets = untitledRoots(chatId);
-    if (!targets.length) { toast('이 채팅에는 제목 없는 결과가 없습니다.', 'info'); return; }
+    const kept = titleDraftProposals(chatId);
+    if (kept.length) { openBatchTitleReview(chatId, kept, readTitleDraft()?.total || kept.length, onApplied, { draft: true }); return; }
+    clearTitleDraft();
+    const targets = rootsForTitle(chatId, redo);
+    if (!targets.length) { toast(redo ? '이 채팅에는 제목 있는 결과가 없습니다.' : '이 채팅에는 제목 없는 결과가 없습니다.', 'info'); return; }
     const ctrl = _batchTitleCtrl = new AbortController();
     const proposals = [];
     let failure = null;
     _batchTitleDone = 0; _batchTitleTotal = targets.length;
     try {
-      for (let i = 0; i < targets.length; i += BATCH_TITLE_CHUNK) {
-        const chunk = targets.slice(i, i + BATCH_TITLE_CHUNK);
+      for (const chunk of titleChunks(targets)) {
         syncBatchTitleUi();
         const titles = await requestBatchTitles(chatId, chunk, ctrl.signal);
         chunk.forEach((it, k) => { if (titles[k]) proposals.push({ ...it, title: titles[k] }); });
         _batchTitleDone += chunk.length;
+        saveTitleDraft(chatId, proposals, targets.length);   // 받는 도중 창이 닫혀도 받은 데까지 남는다
       }
     } catch (e) {
       failure = ctrl.signal.aborted ? 'abort' : (e.message || '알 수 없는 오류');
@@ -5985,10 +6331,22 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
       else if (!failure) toast('제목을 하나도 받지 못했습니다. 지시문이나 연결을 확인하세요.', 'warning');
       return;
     }
-    openBatchTitleReview(chatId, proposals, targets.length, onApplied);
+    openBatchTitleReview(chatId, proposals, targets.length, onApplied, { draft: true });
   }
 
   /* 받아 온 제목 검토 — 무엇이 어떻게 바뀌는지 보고, 붙일 것만 골라 적용한다. */
+  // 뒤 편 제목 중 「옛 제목 + 번호」 꼴만 새 제목으로 바꾼다. 직접 붙인 다른 제목은 그대로 둔다
+  function renumberThreadTitles(root, oldBase, newBase) {
+    const esc = oldBase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const rx = new RegExp('^' + esc + ' (\\d+(?:-\\d+)?)$');
+    (function walk(node) {
+      for (const c of (Array.isArray(node.children) ? node.children : [])) {
+        const m = String(c.title || '').trim().match(rx);
+        if (m) c.title = `${newBase} ${m[1]}`;
+        walk(c);
+      }
+    })(root);
+  }
   function openBatchTitleReview(chatId, proposals, total, onApplied, opts = {}) {
     const picked = new Set(proposals.map((_, i) => i));
     const missed = total - proposals.length;
@@ -6067,8 +6425,13 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
       if (!inp) return;
       const i = +inp.dataset.i;
       if (!picked.has(i)) { picked.add(i); paint(); }
+      if (opts.draft) { proposals[i].title = inp.value; saveTitleDraft(chatId, proposals, total); }
     });
-    ov.querySelector(`#${NS}-btr-cancel`).addEventListener('click', () => ov.remove());
+    ov.querySelector(`#${NS}-btr-cancel`).addEventListener('click', () => {
+      if (opts.draft) clearTitleDraft();
+      ov.remove();
+      onApplied?.();
+    });
 
     applyBtn.addEventListener('click', () => {
       let named = 0, skipped = 0;
@@ -6076,13 +6439,18 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
       for (const i of picked) {
         const p = proposals[i];
         const wanted = (ov.querySelector(`.${NS}-j-btrinput[data-i="${i}"]`)?.value || '').trim();
-        // 검토하는 사이 지워졌거나 직접 제목을 붙인 결과는 건드리지 않는다
-        const live = findSegRoot(p.qrId, chatId, p.root.id)?.seg;
-        if (!wanted || !live || (live.title && live.title.trim())) { skipped++; continue; }
+        // 검토하는 사이 지워졌거나 제목이 바뀐 결과는 건드리지 않는다
+        const hit = findSegRoot(p.qrId, chatId, p.root.id);
+        const live = hit?.seg;
+        const oldTitle = p.oldTitle || '';
+        if (!wanted || !live || (live.title || '').trim() !== oldTitle) { skipped++; continue; }
         live.title = uniqueResultTitle(p.qrId, chatId, wanted, live.id);
+        // 다시 지은 1편이면, 옛 제목 뒤에 번호를 붙여 둔 뒤 편(「옛 제목 2」 · 「옛 제목 3-1」)도 새 제목으로 따라가게
+        if (oldTitle && hit.seg === hit.root && live.title !== oldTitle) renumberThreadTitles(live, oldTitle, live.title);
         touched.add(p.qrId); named++;
       }
       if (named) saveSt();
+      if (opts.draft) clearTitleDraft();
       ov.remove();
       if (chatCache?.chatId === chatId) touched.forEach(id => redrawResults(id));
       toast(skipped
@@ -6279,6 +6647,10 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
   transition:filter .2s ease-out; }
 #${NS}-tab:hover > svg, #${NS}-tab:focus-visible > svg { filter:none; }
 #${NS}-tab:active { scale:.96; }
+/* 준비 전에 눌렀다 — 끝나면 열린다 */
+#${NS}-tab.${NS}-tab-wait > svg { filter:none; animation:${NS}-tabwait 1s ease-in-out infinite alternate; }
+@keyframes ${NS}-tabwait { from { opacity:1; } to { opacity:.35; } }
+@media (prefers-reduced-motion: reduce) { #${NS}-tab.${NS}-tab-wait > svg { animation:none; } }
 
 #${NS}-panel {
   position:fixed; top:0; right:0; height:100vh; width:var(--srb-w,420px);
@@ -7866,6 +8238,9 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
 @media (max-width:600px) { .${NS}-pe-tray { right:8px; left:8px; bottom:12px; width:auto; max-height:50vh; } }
 .${NS}-vedit .${NS}-vedit-ta { min-height:160px; resize:none; overflow:hidden; }   /* .mta 의 resize:vertical 보다 세게 */
 .${NS}-vedit-note { font-size:var(--srb-fs-sm); color:var(--muted-foreground,#94a3b8); }
+.${NS}-vedit-ask { display:flex; flex-direction:column; gap:4px; font-size:var(--srb-fs-sm); color:var(--muted-foreground,#94a3b8); }
+.${NS}-vedit .${NS}-vedit-asktxt { height:auto; min-height:0; max-height:40vh; resize:vertical;
+  background:color-mix(in srgb, var(--primary,#7c3aed) 12%, transparent); }
 .${NS}-vedit-more > summary { cursor:pointer; font-size:var(--srb-fs-sm); color:var(--muted-foreground,#94a3b8); }
 .${NS}-vedit-nums { display:flex; gap:8px; margin:6px 0; }
 .${NS}-vedit-num { flex:1; min-width:0; display:flex; flex-direction:column; gap:3px; font-size:var(--srb-fs-sm); color:var(--muted-foreground,#94a3b8); }
@@ -7906,6 +8281,54 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
   box-sizing:border-box;   /* 여백까지 폭에 넣는다 — 안 넣으면 40px 넘쳐 오른쪽 끝(날짜 등)이 잘린다 */
 }
 .${NS}-modal-sub { font-size:var(--srb-fs-base); color:var(--muted-foreground,#64748b); margin-bottom:11px; }
+/* 보관함 결과 머리 — 한 줄(← 제목 · 도구). 나머지는 그 아래 정보 줄 */
+.${NS}-viewer-hd > .${NS}-ar-reader-hd { gap:8px; }
+.${NS}-ar-reader-hd .${NS}-ar-reader-title { flex:0 1 auto; min-width:64px; }
+.${NS}-ar-reader-hd .${NS}-viewer-result-row { flex-wrap:nowrap; }
+.${NS}-ar-reader-hd .${NS}-ar-reader-title .${NS}-viewer-restitle { flex:0 1 auto; min-width:0; font-size:1.08em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.${NS}-ar-reader-hd .${NS}-viewer-resmeta { flex-shrink:0; white-space:nowrap; }
+.${NS}-ar-reader-hd > .${NS}-viewer-toolbar { flex:1 1 auto; min-width:0; }
+.${NS}-ar-info { display:flex; flex-direction:column; gap:6px; }
+.${NS}-viewer-editing .${NS}-ar-info { display:none; }
+.${NS}-ar-info-row { display:flex; flex-wrap:wrap; align-items:center; gap:8px; min-width:0; }
+.${NS}-ar-info .${NS}-ar-reader-tags { margin:0; }
+.${NS}-ar-info .${NS}-ar-reader-chat { max-width:100%; }
+.${NS}-viewer-hd > .${NS}-ar-reader-hd > .${NS}-vedit-bar { margin-left:auto; padding:0; }
+/* 편집 중 — 맨 위 줄은 결과 보기 머리 안에 있으므로 머리 전체가 붙는다(안쪽 줄은 따로 붙지 않는다) */
+.${NS}-ar-reader:has(.${NS}-viewer-editing) .${NS}-viewer-hd > .${NS}-ar-reader-hd { position:static; margin:0; padding:0; border:0; box-shadow:none; background:none; }
+.${NS}-ar-reader .${NS}-viewer-editing .${NS}-viewer-hd:has(.${NS}-vedit-bar) { top:-10px; }
+/* 크게 보기 — 소르베 창과 같은 자리 · 크기. 위 제목 · ×, 가운데 본문, 아래 편 번호 · 이어쓰기 */
+.${NS}-rd {
+  position:fixed; inset:3vh 3vw; margin:auto; max-width:var(--srb-win-w,1320px);
+  display:flex; flex-direction:column; overflow:hidden;
+  background:var(--background,#12121e); color:var(--foreground,#e2e8f0);
+  border:1px solid var(--border,rgba(255,255,255,.09)); border-radius:16px; box-shadow:0 20px 64px rgba(0,0,0,.5);
+  font-size:var(--srb-fs-base);
+}
+.${NS}-rd-hd {
+  display:flex; align-items:center; gap:8px; flex-shrink:0;
+  padding:10px 12px 10px 20px; border-bottom:1px solid var(--border,rgba(255,255,255,.12));
+}
+.${NS}-rd-title { flex:1; min-width:0; font-size:var(--srb-fs-lg); font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.${NS}-rd-sc { position:relative; flex:1; min-height:0; overflow-y:auto; overscroll-behavior:contain; }
+.${NS}-rd .${NS}-rd-body {   /* 결과 본문 칸의 높이 제한 · 위 선은 풀고 읽기 폭만 */
+  max-width:min(760px, calc(var(--srb-content-width,100) * 1%)); max-height:none; overflow:visible; border-top:0;
+  margin:0 auto; padding:28px 24px 40px; box-sizing:border-box; line-height:var(--srb-content-line,1.8);
+}
+.${NS}-rd-turn + .${NS}-rd-turn { border-top:1px solid var(--border,rgba(127,127,127,.25)); margin-top:32px; padding-top:32px; }
+.${NS}-rd-ft {
+  flex-shrink:0; border-top:1px solid var(--border,rgba(255,255,255,.12));
+  background:color-mix(in srgb, var(--background,#12121e) 93%, #fff);
+}
+.${NS}-rd-nums { display:flex; align-items:center; gap:4px; overflow-x:auto; scrollbar-width:none; padding:10px 12px 2px; }
+.${NS}-rd-nums::-webkit-scrollbar { display:none; }
+.${NS}-rd-nums > small { flex-shrink:0; margin-right:4px; font-size:var(--srb-fs-sm); color:var(--muted-foreground,#94a3b8); }
+.${NS}-rd-nums .${NS}-vseg-tab { appearance:none; font:inherit; font-size:var(--srb-fs-sm); font-weight:600; }
+.${NS}-rd .${NS}-cbar { position:static; margin:0; background:none; border-top:0; box-shadow:none; padding:4px 12px 16px; }
+@media (max-width: 600px) {
+  .${NS}-rd { inset:0; top:var(--${NS}-vvt, 0px); bottom:auto; height:var(--${NS}-vvh, 100%); max-width:none; border:0; border-radius:0; }
+  .${NS}-rd .${NS}-rd-body { padding:20px 16px 32px; }
+}
 .${NS}-mta {
   width:100%; height:160px; box-sizing:border-box; background:var(--card,rgba(0,0,0,.25));
   border:1px solid var(--border,rgba(255,255,255,.1)); border-radius:8px;
@@ -8507,6 +8930,7 @@ input[type=range].${NS}-range::-webkit-slider-thumb { -webkit-appearance:none; w
    * (findResultDeep 이 children 까지 훑으므로 기존 핸들러가 그대로 동작) */
   // 결과 목록만 다시 그린다 (패널 전체 렌더보다 가볍고 스크롤이 튀지 않음)
   function redrawResults(qrId) {
+    _readerRepaint?.();   // 크게 보기가 떠 있으면 그쪽도
     const chatId = chatCache?.chatId; if (!chatId) return;
     // 보관함(카드 격자)에는 #rl 컨테이너가 없다 — ★·옮기기·삭제 뒤에 격자를 다시 그린다
     if (uiPage() !== 'studio') { if (panelOpen) renderBody(); return true; }
@@ -8686,7 +9110,7 @@ input[type=range].${NS}-range::-webkit-slider-thumb { -webkit-appearance:none; w
       }
       /* 새 스와이프도 서버에 맡길 수 있다. 붙는 자리는 '이 세그먼트의 부모'다. */
       const pendingDesc = {
-        qrId, chatId, kind: 'regen', parentId: parent.id,
+        qrId, chatId, kind: 'regen', nodeId: uid(), parentId: parent.id,
         chatName: cc?.chatName || root.chatName,
         title: null,
         instruction: regenInstruction || null,
@@ -8729,7 +9153,8 @@ input[type=range].${NS}-range::-webkit-slider-thumb { -webkit-appearance:none; w
       const regenTitle = rsplit?.title && rsplit.body.trim() ? rsplit.title : '';
       if (regenTitle) res.content = rsplit.body;
       livePar.children.push({
-        id: uid(), ts: new Date().toISOString(), runId: res?.runId || null,
+        id: findSegRoot(qrId, chatId, pendingDesc.nodeId) ? uid() : pendingDesc.nodeId,
+        ts: new Date().toISOString(), runId: res?.runId || null,
         images: Array.isArray(seg.images) && seg.images.length ? seg.images : null,
         chatId, chatName: cc?.chatName || root.chatName,
         content: res.content,
@@ -10130,7 +10555,7 @@ ${(!canRun && !cs.aborted) ? `<div class="${NS}-st-hint">선택지를 모두 고
   function ensureArchiveLive(force = false) {
     if (archiveLiveLoading || (archiveLive && !force)) return;
     archiveLiveLoading = true;
-    GET('/chats')
+    fetchChatList()
       .then(list => { if (Array.isArray(list) && list.length) archiveLive = new Map(list.map(c => [c.id, c.name || ''])); })
       .catch(() => {})
       .finally(() => { archiveLiveLoading = false; if (panelOpen && ['library', 'fresh'].includes(uiPage()) && archiveLive) renderBody(); });
@@ -10968,6 +11393,22 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
     // 태그 줄은 제목 바로 아래 — 따로 한 줄을 쓰지 않게 맨 위 줄의 제목 칸 안으로 옮긴다
     const tagsRow = wrap.querySelector(`.${NS}-ar-reader-tags`), titleBox = wrap.querySelector(`.${NS}-ar-reader-title`);
     if (tagsRow && titleBox) titleBox.appendChild(tagsRow);
+    /* 머리는 한 줄 — ← 제목 · 도구 단추. 눈·#번호·태그·채팅·양식·메모는 그 아래 줄에 늘 펼쳐 둔다.
+       맨 위 줄을 결과 보기 머리 안으로 옮겨 도구 줄과 한 줄에 둔다(둘 다 결과 보기 안이라 단추 연결은 그대로) */
+    const vhd = wrap.querySelector(`.${NS}-viewer-hd`), tools = wrap.querySelector(`.${NS}-viewer-toolbar`);
+    const hdRow = wrap.querySelector(`.${NS}-ar-reader-hd`);
+    if (vhd && tools && hdRow && titleBox) {
+      vhd.prepend(hdRow);
+      const info = document.createElement('div');
+      info.className = `${NS}-ar-info`;
+      const pick = (sel, from = hdRow) => from.querySelector(sel);
+      const facts = document.createElement('div');
+      facts.className = `${NS}-ar-info-row`;
+      facts.append(...[pick(`.${NS}-ar-reader-chat`), pick(`:scope > .${NS}-tag`), pick(`.${NS}-j-vaskshow`), pick(`.${NS}-viewer-result-row > .${NS}-badge`), tagsRow].filter(Boolean));
+      info.append(facts, ...[vhd.querySelector(`#${NS}-v-memo-preview`)].filter(Boolean));
+      hdRow.after(info);
+      hdRow.appendChild(tools);
+    }
     // 내 태그 — Enter(또는 쉼표)로 넣고 × 로 뺀다. 한글 조합 중 Enter 는 넘긴다
     const tagIn = wrap.querySelector(`.${NS}-utag-input`);
     const redrawTags = () => { renderArchiveReader(bd, true); wrap = bd.firstElementChild; wrap.querySelector(`.${NS}-utag-input`)?.focus(); };
@@ -12266,6 +12707,8 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
       const pendingDesc = {
         qrId, chatId,
         kind: continueRid ? 'continue' : 'root',
+        // 결과에 붙을 id 를 미리 정한다 — 서버 기록에서 되살릴 때 같은 id 로 붙어야 뒤 편이 이 편을 부모로 찾는다
+        nodeId: uid(),
         parentId: parentNode ? parentNode.id : null,
         chatName: ctx.chatName,
         title: plannedTitle || null,
@@ -12314,7 +12757,7 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
         if (!liveParentHit) { toast('\uC774\uC5B4\uC4F8 \uC6D0\uBCF8\uC774 \uC0DD\uC131 \uC911 \uC0AD\uC81C\uB418\uC5C8\uC2B5\uB2C8\uB2E4.', 'warning'); return; }
         parentNode = liveParentHit.seg;
         if (!Array.isArray(parentNode.children)) parentNode.children = [];
-        const contId = uid();
+        const contId = findSegRoot(qrId, chatId, pendingDesc.nodeId) ? uid() : pendingDesc.nodeId;
         parentNode.children.push({
           id: contId, ts: new Date().toISOString(), runId: res?.runId || null,
           images: turnImages.length ? turnImages : null,
@@ -12358,7 +12801,7 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
       }
 
       const list = resultsFor(qrId, chatId);
-      const rootId = uid();
+      const rootId = findSegRoot(qrId, chatId, pendingDesc.nodeId) ? uid() : pendingDesc.nodeId;
       list.unshift({
         id: rootId, ts: new Date().toISOString(), runId: res?.runId || null,
         images: turnImages.length ? turnImages : null,
@@ -12448,8 +12891,52 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
     return added;
   }
 
+  /* 같은 생성(runId)이 두 번 들어간 것을 하나로 합친다 — 서버 기록에서 되살린 사본과 원래 결과가 함께 돌아오면 겹친다.
+     원래 것(되살린 표시가 없는 것, 그다음 먼저 만든 것)을 남기고, 사본에 붙은 뒤 편과 제목은 남는 쪽으로 옮긴다. */
+  function dedupeRunCopies(list) {
+    if (!Array.isArray(list)) return 0;
+    const contains = (node, target) => node === target
+      || (Array.isArray(node?.children) && node.children.some(c => contains(c, target)));
+    let removed = 0;
+    for (;;) {
+      const seen = new Map();
+      let pair = null;
+      const walk = (arr) => {
+        for (const n of arr) {
+          if (pair || !n) continue;
+          if (n.runId) {
+            const had = seen.get(n.runId);
+            if (had) { pair = [had, { node: n, arr }]; return; }
+            seen.set(n.runId, { node: n, arr });
+          }
+          if (Array.isArray(n.children)) walk(n.children);
+        }
+      };
+      walk(list);
+      if (!pair) break;
+      const rank = x => [x.node.recovered ? 1 : 0, Date.parse(x.node.ts) || 0];
+      const [ra, rb] = pair.map(rank);
+      let [keep, drop] = (ra[0] !== rb[0] ? ra[0] < rb[0] : ra[1] <= rb[1]) ? pair : [pair[1], pair[0]];
+      if (contains(drop.node, keep.node)) [keep, drop] = [drop, keep];   // 뒤 편을 앞 편 밑으로 옮기면 고리가 생긴다
+      if (!Array.isArray(keep.node.children)) keep.node.children = [];
+      keep.node.children.push(...(Array.isArray(drop.node.children) ? drop.node.children : []));
+      if (!(keep.node.title || '').trim() && (drop.node.title || '').trim()) keep.node.title = drop.node.title;
+      drop.arr.splice(drop.arr.indexOf(drop.node), 1);
+      removed += 1;
+    }
+    if (removed) {
+      const clamp = (arr) => arr.forEach(n => {
+        if (!Array.isArray(n?.children)) return;
+        if (!(n.activeChild < n.children.length)) n.activeChild = Math.max(0, n.children.length - 1);
+        clamp(n.children);
+      });
+      clamp(list);
+    }
+    return removed;
+  }
+
   async function scanLostResults(chatId) {
-    const report = { chatId, added: 0, sources: [], missingNotifs: [], memBefore: 0, memAfter: 0 };
+    const report = { chatId, added: 0, deduped: 0, sources: [], missingNotifs: [], memBefore: 0, memAfter: 0 };
     if (!chatId) return report;
     if (_dirtyChats.size) { try { await flushResults(); } catch {} }
 
@@ -12478,6 +12965,46 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
       } catch (e) { console.warn('[소르베] 서버 복구 읽기 실패:', e.message); }
     }
 
+    const dedupeChat = () => {
+      let n = 0;
+      for (const byChat of Object.values(st.results || {})) n += dedupeRunCopies(byChat?.[chatId]);
+      report.deduped += n;
+    };
+    dedupeChat();
+
+    // 저장소 어디에도 없으면 서버 생성 기록(24시간)에서 원문을 받아 원래 자리에 붙인다
+    let fromRuns = 0;
+    const waiting = [];
+    for (const desc of trimRecentRuns(st.recentRuns).reverse()) {   // 먼저 만든 편부터
+      if (desc.chatId !== chatId || !desc.qrId || treeHasRun(desc.qrId, chatId, desc.runId)) continue;
+      if (desc.nodeId && findSegRoot(desc.qrId, chatId, desc.nodeId)) continue;
+      if (!findLib(desc.qrId)) continue;
+      try {
+        const r = await fetch(serverRunPath(desc.runId), { headers: HDR_G });
+        if (!r.ok) continue;
+        const run = await r.json();
+        if (run?.status !== 'done' || !String(run.content || '').trim()) continue;
+        waiting.push({ desc, content: run.content });
+      } catch (e) { console.warn('[소르베] 서버 생성 기록 읽기 실패:', desc.runId, e.message); }
+    }
+    // 앞 편이 붙어야 뒤 편이 부모를 찾는다 — 붙을 때마다 다시 돈다
+    for (let progress = true; progress;) {
+      progress = false;
+      for (let i = 0; i < waiting.length; i++) {
+        const { desc, content } = waiting[i];
+        if (desc.kind !== 'root' && !findSegRoot(desc.qrId, chatId, desc.parentId)) continue;
+        if (attachPendingResult(desc, content)) fromRuns += 1;
+        waiting.splice(i--, 1);
+        progress = true;
+      }
+    }
+    // 끝까지 붙어 있던 편을 못 찾은 뒤 편만 따로 떨어진 결과로 둔다
+    for (const { desc, content } of waiting) {
+      if (attachPendingResult({ ...desc, kind: 'root' }, content)) fromRuns += 1;
+    }
+    if (fromRuns) { report.added += fromRuns; report.sources.push(`서버 생성 기록 ${fromRuns}개`); }
+    dedupeChat();
+
     const after = new Set();
     for (const byChat of Object.values(st.results || {})) collectTreeIds(byChat?.[chatId], after);
     report.memAfter = after.size;
@@ -12490,7 +13017,7 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
       if (nf.gone) continue;                 // 사용자가 직접 지운 결과 — 유실이 아니다
       if (!after.has(nf.rid)) report.missingNotifs.push(nf);
     }
-    if (report.added) { saveSt(); markResultsDirty(chatId); }
+    if (report.added || report.deduped) { saveSt(); markResultsDirty(chatId); }
     return report;
   }
 
@@ -12545,9 +13072,10 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
         <span class="${NS}-archive-stat">
           화면의 결과 ${rep.memBefore}개 → <b>${rep.memAfter}개</b>
           ${rep.added ? ` · 되살림 ${rep.added}개 (${esc(rep.sources.join(', '))})` : ' · 새로 찾은 것 없음'}
+          ${rep.deduped ? ` · 겹친 편 ${rep.deduped}개 합침` : ''}
         </span>
       </div>
-      ${rep.added ? `<div class="${NS}-ctx-note" style="margin-top:8px">되살린 결과를 저장했습니다. 목록을 새로 그렸습니다.</div>` : ''}
+      ${rep.added || rep.deduped ? `<div class="${NS}-ctx-note" style="margin-top:8px">바뀐 결과를 저장했습니다. 목록을 새로 그렸습니다.</div>` : ''}
       ${lostHtml}`;
 
     ov.querySelector(`#${NS}-rc-ack`)?.addEventListener('click', () => {
@@ -13742,6 +14270,89 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
       + (meta.length ? `<small class="${NS}-viewer-resmeta"${own ? ` title="${esc(own)}"` : ''}>${esc(meta.join(' · '))}</small>` : '');
   }
 
+  /* 크게 보기 — 소르베 창 크기로 본문만 넓게 읽는다. 타래 전체를 이어서 보여 주고, 보던 편부터 연다.
+     위: 제목 · ×. 아래: 편 번호(누르면 그 편으로) · 이어쓰기 칸. 원문/번역은 편마다 지금 보이는 쪽. 닫기는 ×·Esc·바깥
+     새 편이 생기면 redrawResults 가 _readerRepaint 로 다시 그린다 */
+  let _readerRepaint = null;
+  function openContentReader(qrId, chatId, rid) {
+    const hit0 = findSegRoot(qrId, chatId, rid); if (!hit0) return;
+    const rootId = hit0.root.id;
+    const ov = mkOverlay(); ov.classList.add(`${NS}-rd-ov`);
+    ov.innerHTML = `<div class="${NS}-rd" role="dialog" aria-label="크게 보기">
+  <div class="${NS}-rd-hd"><span class="${NS}-rd-title"></span>
+    <button type="button" class="${NS}-btn ${NS}-btn-icon ${NS}-rd-x" title="닫기 (Esc)" aria-label="닫기">${svg('close')}</button></div>
+  <div class="${NS}-rd-sc"><div class="${NS}-rd-body srb-result-content"></div></div>
+  <div class="${NS}-rd-ft"></div>
+</div>`;
+    const box = ov.firstElementChild;
+    const sc = box.querySelector(`.${NS}-rd-sc`), body = box.querySelector(`.${NS}-rd-body`), ft = box.querySelector(`.${NS}-rd-ft`);
+    // 스킨 바탕·글자색은 패널에 걸려 있다 — 패널 밖에 뜨므로 그대로 옮겨 칠한다
+    const p = _panelEl || document.getElementById(PANEL), cs = p ? getComputedStyle(p) : null;
+    if (cs) {
+      if (!/^(transparent|rgba\(.*,\s*0\))$/.test(cs.backgroundColor)) box.style.backgroundColor = cs.backgroundColor;
+      if (cs.backgroundImage !== 'none') box.style.backgroundImage = cs.backgroundImage;
+      box.style.color = cs.color; box.style.fontFamily = cs.fontFamily;
+    }
+    let cur = String(rid), shownIds = '';
+    const goTo = (id) => {
+      const el = body.querySelector(`[data-turn="${CSS.escape(String(id))}"]`); if (!el) return;
+      sc.scrollTop = el === body.firstElementChild ? 0 : Math.max(0, el.offsetTop - 16);
+      markCur(String(id));
+    };
+    const markCur = (id) => {
+      cur = id;
+      ft.querySelectorAll(`.${NS}-j-rdnum`).forEach(b => {
+        const on = b.dataset.rid === id;
+        b.classList.toggle(`${NS}-vseg-on`, on); b.setAttribute('aria-pressed', String(on));
+        if (on) b.scrollIntoView({ block:'nearest', inline:'nearest' });
+      });
+    };
+    const paint = () => {
+      const hit = findSegRoot(qrId, chatId, rootId); if (!hit) { close(); return; }
+      const q = findLib(qrId), segs = activePath(hit.root);
+      box.querySelector(`.${NS}-rd-title`).textContent = resultTitle(hit.root);
+      const ids = segs.map(sg => sg.id).join(',');
+      const grew = shownIds && ids.startsWith(shownIds) && ids.length > shownIds.length;
+      if (ids !== shownIds || !body.childElementCount) {
+        const top = sc.scrollTop;
+        body.innerHTML = segs.map(sg =>
+          `<section class="${NS}-rd-turn" data-turn="${esc(sg.id)}">${viewerBodyHtml(sg, q, !!(sg.translation && sg.showTranslation !== false))}</section>`).join('');
+        sc.scrollTop = top;
+        // HTML 결과 — 높이 보고가 안 오면 결과창처럼 화면 높이만큼은 펼친다
+        setTimeout(() => body.querySelectorAll('iframe').forEach(f => { if (!f.dataset.srbSized) f.style.minHeight = '60vh'; }), 1500);
+      }
+      const nums = segs.length > 1 ? `<div class="${NS}-rd-nums" role="group" aria-label="편 번호"><small>편</small>${segs.map((sg, i) =>
+        `<button type="button" class="${NS}-vseg-tab ${NS}-j-rdnum" data-rid="${esc(sg.id)}" title="${esc(segDisplayTitle(hit.root, sg))}">${i + 1}</button>`).join('')}</div>` : '';
+      ft.innerHTML = nums + contBarHtml(hit.root, q);
+      bindContBar(box, qrId, chatId);
+      ft.querySelectorAll(`.${NS}-j-rdnum`).forEach(b => b.addEventListener('click', () => goTo(b.dataset.rid)));
+      if (grew) { shownIds = ids; requestAnimationFrame(() => goTo(segs[segs.length - 1].id)); return; }   // 이어 쓴 새 편으로
+      if (!segs.some(sg => sg.id === cur)) cur = segs[segs.length - 1].id;
+      shownIds = ids;
+      markCur(cur);
+    };
+    // 스크롤하면 지금 읽는 편의 번호에 불이 들어온다
+    let raf = 0;
+    sc.addEventListener('scroll', () => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        let id = null;
+        for (const el of body.children) { if (el.offsetTop - 40 <= sc.scrollTop) id = el.dataset.turn; else break; }
+        if (sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 4) id = body.lastElementChild?.dataset.turn;
+        if (id && id !== cur) markCur(id);
+      });
+    }, { passive:true });
+    document.body.appendChild(ov);
+    const close = () => { if (_readerRepaint === paint) _readerRepaint = null; document.removeEventListener('keydown', onKey, true); ov.remove(); };
+    const onKey = (e) => { if (e.key === 'Escape' && !document.querySelector(`.${NS}-ov:not(.${NS}-rd-ov), .${NS}-menu`)) { e.stopPropagation(); e.preventDefault(); close(); } };
+    document.addEventListener('keydown', onKey, true);
+    ov.addEventListener('click', (e) => { if (e.target === ov || e.target.closest(`.${NS}-rd-x`)) close(); });
+    _readerRepaint = paint;
+    paint();
+    requestAnimationFrame(() => goTo(rid));   // 보던 편부터
+  }
+
   function viewerMemoPreviewHtml(r) {
     if (!r.memo) return '';
     // 동일한 텍스트 요소의 white-space/max-height만 토글한다.
@@ -14112,9 +14723,9 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
       ? viewerFlowHtml(_root, q, rid)
       : `${st.settings.showTurnInput === false ? nodeImagesHtml(r) : viewerAskHtml(r, !findSegParent(_root, r.id), _root)}${viewerBodyHtml(r, q, useTr)}`;
 
-    /* 이어 보기 ↔ 한 편씩 단추. 편 번호 줄 끝에 붙는데, 편이 하나이거나 번호 뱃지를 끄면 그 줄이 없다 —
-       그때는 아래 줄(스와이프 자리)에 둔다. 설정은 모든 타래에 함께 걸려서, 단추가 사라지면 한 편짜리 타래에서 되돌릴 수 없었다 */
-    const segRowShown = activePath(_root).length >= 2 && st.settings.showTurnBadges !== false;
+    /* 이어 보기 ↔ 한 편씩 단추는 늘 도구 줄에 둔다. 설정은 모든 타래에 함께 걸려서, 단추가 사라지면 한 편짜리 타래에서 되돌릴 수 없었다 */
+    /* 이어 보기에서는 본문의 편 머리마다 번호가 있어 위 번호 줄은 겹친다 — 한 편씩 볼 때만 둔다 */
+    const segRowShown = !flow && activePath(_root).length >= 2 && st.settings.showTurnBadges !== false;
     const flowToggle = flowable ? `<span class="${NS}-vflow-mode" role="group" aria-label="이어쓰기 보기">
           <button type="button" class="${NS}-j-vflowmode" data-flow="1" aria-pressed="${flow}">이어 보기</button>
           <button type="button" class="${NS}-j-vflowmode" data-flow="0" aria-pressed="${!flow}">한 편씩</button>
@@ -14151,22 +14762,8 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
                title="${esc(resultTitle(sg))}${hasNewAtPosition?' · 새 결과':''}">${i===0?svg('play'):svg('continue')} ${i+1}</span>`;
         }).join('') + `</div>
         <span class="${NS}-j-vsegscroll ${NS}-vseg-arrow" data-dir="1" title="다음">${svg('chevronRight')}</span>
-        ${flowToggle}
       </div>`;
     })()}
-    <div class="${NS}-viewer-subrow">
-      ${segRowShown ? '' : flowToggle}
-      ${(() => {
-        const par = findSegParent(_root, r.id);
-        if (!par || par.children.length < 2) return '';
-        const i = par.children.findIndex(c => c.id === r.id);
-        return `<span class="${NS}-swipe" title="이 자리의 다른 스와이프로 전환">
-          <span class="${NS}-j-vswipe ${NS}-swipe-btn" data-dir="-1">${svg('chevronRight')}</span>
-          <span class="${NS}-swipe-n">${i+1}/${par.children.length}</span>
-          <span class="${NS}-j-vswipe ${NS}-swipe-btn" data-dir="1">${svg('chevronRight')}</span>
-        </span>`;
-      })()}
-    </div>
     <div class="${NS}-viewer-toolbar">
       <span class="${NS}-viewer-cont-status" data-id="${esc(qrId)}" data-rid="${esc(rid)}" style="display:none"></span>
       <button class="${NS}-btn ${NS}-btn-icon ${NS}-btn-sm ${NS}-j-vregenp" title="${_hit.parent?'바꿔서 새 스와이프':'바꿔서 다시 생성'}" aria-label="${_hit.parent?'바꿔서 새 스와이프':'바꿔서 다시 생성'}">${svg('chat')}</button>
@@ -14193,12 +14790,24 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
         <button class="${NS}-j-vsaveimg" data-label="이미지로 저장"${segIsHtml(r) ? '' : ' data-skip="1"'}>${svg('image')}</button>
       </span>
       <div style="flex:1"></div>
+      ${(() => {   /* 스와이프 · 이어 보기/한 편씩은 따로 한 줄을 쓰지 않고 도구 줄 오른쪽에 — 본문 자리를 넓힌다 */
+        const par = findSegParent(_root, r.id);
+        if (!par || par.children.length < 2) return '';
+        const i = par.children.findIndex(c => c.id === r.id);
+        return `<span class="${NS}-swipe" title="이 자리의 다른 스와이프로 전환">
+          <span class="${NS}-j-vswipe ${NS}-swipe-btn" data-dir="-1">${svg('chevronRight')}</span>
+          <span class="${NS}-swipe-n">${i+1}/${par.children.length}</span>
+          <span class="${NS}-j-vswipe ${NS}-swipe-btn" data-dir="1">${svg('chevronRight')}</span>
+        </span>`;
+      })()}
+      ${flowToggle}
       <label class="${NS}-mini-toggle ${NS}-j-vtogglewrap" title="원문/번역 전환" style="${transReady?'':'display:none'}">
         <span style="font-size:var(--srb-fs-sm);color:var(--muted-foreground,#64748b)">원문</span>
         <input type="checkbox" class="${NS}-j-vtoggle" ${showTr?'checked':''}>
         <span class="${NS}-mini-track"><span class="${NS}-mini-thumb"></span></span>
         <span style="font-size:var(--srb-fs-sm);color:var(--muted-foreground,#64748b)">번역</span>
       </label>
+      <button class="${NS}-btn ${NS}-btn-icon ${NS}-btn-sm ${NS}-j-vread" title="크게 보기 — 본문만" aria-label="크게 보기">${svg('expand')}</button>
     </div>
   </div>
   <div class="${NS}-viewer-body srb-result-content${flow ? ' ' + NS + '-vflow' : ''}" id="${NS}-viewer-body">${paintHtml(transReady && showTr)}</div>
@@ -14254,6 +14863,7 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
     }
 
     const closeViewer = () => onClose?.();
+    ov.querySelector(`.${NS}-j-vread`)?.addEventListener('click', () => openContentReader(qrId, chatId, rid));
 
     // ⋯ — 숨겨 둔 버튼을 글자 메뉴로 보여 주고, 고르면 그 버튼을 대신 누른다
     ov.querySelector(`.${NS}-j-vmore`)?.addEventListener('click', (e) => {
@@ -14308,6 +14918,19 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
     /* 수정 — 보고 있는 자리에서 본문이 입력칸으로 바뀐다(팝업 아님). 읽던 위치를 그대로 잇고,
        도구 줄은 저장·취소만 남긴다. 번역을 보고 있었으면 번역문을, 아니면 원문을 고친다.
        이어 보기면 고른 턴만 입력칸이 되고 나머지 턴은 그대로 읽힌다. */
+    /* 본문 더블클릭 — 수정 단추와 같다(설정에서 끌 수 있음). 링크 · 단추 · 입력칸 위는 넘기고,
+       이어 보기면 지금 고른 편 안에서만 연다 */
+    ov.querySelector(`#${NS}-viewer-body`)?.addEventListener('dblclick', (e) => {
+      if (st.settings.dblEdit === false) return;
+      if (e.target.closest('a, button, input, textarea, select, summary, [contenteditable="true"]')) return;
+      if (ov.querySelector(`.${NS}-viewer-inline`)?.classList.contains(`${NS}-viewer-editing`)) return;
+      if (flow) {
+        const turn = e.target.closest(`[data-turn]`);
+        if (!turn || turn.dataset.turn !== String(rid) || !e.target.closest(`.${NS}-vturn-body`)) return;
+      }
+      try { window.getSelection()?.removeAllRanges(); } catch {}
+      ov.querySelector(`.${NS}-j-vedit`)?.click();
+    });
     ov.querySelector(`.${NS}-j-vedit`).addEventListener('click', () => {
       const box = ov.querySelector(`.${NS}-viewer-inline`);
       const body = ov.querySelector(`#${NS}-viewer-body`);
@@ -14317,7 +14940,16 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
       if (!target) return;
       const scroller = scrollParentOf(target);
       const frac = scrollFracOf(target, scroller);
-      target.innerHTML = resultEditHtml(r, editTr);
+      target.innerHTML = resultEditHtml(r, editTr, !findSegParent(_root, r.id));
+      // 이어 보기의 입력 말풍선은 편집칸 맨 위의 입력칸과 겹친다 — 고치는 동안 가린다
+      const askBubble = flow ? target.closest(`[data-turn]`)?.previousElementSibling : null;
+      if (askBubble?.classList.contains(`${NS}-vturn-ask`)) askBubble.hidden = true;
+      // 입력칸은 글 길이만큼 — 브라우저가 못 맞춰 주면 칠 때마다 잰다
+      for (const a of target.querySelectorAll(`.${NS}-vedit-asktxt`)) {
+        if (window.CSS?.supports?.('field-sizing', 'content')) { a.style.setProperty('field-sizing', 'content'); continue; }
+        const grow = () => { a.style.height = 'auto'; a.style.height = `${a.scrollHeight + 2}px`; };
+        grow(); a.addEventListener('input', grow);
+      }
       box.classList.add(`${NS}-viewer-editing`);
       const bar = target.querySelector(`.${NS}-vedit-bar`);
       // 저장·취소는 머리줄 안으로 — 머리줄이 제목과 함께 위에 붙어 따라온다
@@ -14409,6 +15041,7 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
         const val = n => box.querySelector(`.${NS}-vedit-${n}`)?.value;
         applyMsgCounts(r, val('total'), val('user'), val('ai'));
         if (editTr) r.translation = ta.value; else r.content = ta.value;
+        for (const a of target.querySelectorAll(`.${NS}-vedit-asktxt`)) r[a.dataset.k] = a.value.trim() || null;
         // 손으로 고쳤으면 "고치기 전으로"가 그것까지 되돌리지 않게 부분 고치기 기록을 비운다
         if (editTr) delete r.prevTranslation; else delete r.prevContent;
         saveSt();
@@ -14974,7 +15607,18 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
   }
 
   /* 결과 보기의 그 자리 편집 — 본문 입력칸과, 접어 둔 메시지 시점 칸 */
-  function resultEditHtml(r, editTr) {
+  /* 그 편을 만든 입력 — 주문(첫 편) · 이어쓰기 지시 · 합칠 때 지시. 다시 생성하지 않고 기록만 고친다 */
+  function askEditFields(r, isRoot) {
+    const merged = Array.isArray(r.mergedFrom) && r.mergedFrom.length;
+    const out = [];
+    if (isRoot && !merged) out.push(['inputText', '주문', r.inputText]);
+    if (!isRoot || merged || String(r.instruction || '').trim())
+      out.push(['instruction', merged ? '합칠 때 지시' : isRoot ? '추가 지시' : '이어쓰기 지시', r.instruction]);
+    return out;
+  }
+  function resultEditHtml(r, editTr, isRoot = false) {
+    const ask = askEditFields(r, isRoot).map(([k, label, v]) => `<label class="${NS}-vedit-ask"><span>${label}</span>
+      <textarea class="${NS}-mta ${NS}-vedit-asktxt" data-k="${k}" rows="2">${esc(v || '')}</textarea></label>`).join('');
     const num = (k, label, v, ph) => `<label class="${NS}-vedit-num"><span>${label}</span>
       <input type="number" min="0" class="${NS}-set-input ${NS}-vedit-${k}" value="${v ?? ''}" placeholder="${ph}"></label>`;
     return `<div class="${NS}-vedit">
@@ -14982,6 +15626,7 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
     <button type="button" class="${NS}-btn ${NS}-btn-ghost ${NS}-btn-sm ${NS}-j-vedcancel">취소</button>
     <button type="button" class="${NS}-btn ${NS}-btn-primary ${NS}-btn-sm ${NS}-j-vedsave">저장</button>
   </div>
+  ${ask}
   ${editTr ? `<div class="${NS}-vedit-note">번역문을 고칩니다. 원문은 원문으로 바꾼 뒤 수정하세요.</div>` : ''}
   <textarea class="${NS}-mta ${NS}-vedit-ta" aria-label="${editTr ? '번역문' : '본문'} 수정">${esc((editTr ? r.translation : r.content) || '')}</textarea>
   <div class="${NS}-vedit-foot"><details class="${NS}-vedit-more"><summary>메시지 시점</summary>
@@ -15051,12 +15696,14 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
       startChatWatcher();
       toast('자동 감지로 변경했습니다.', 'info');
     });
-    try {
-      const chats = await GET('/chats');
-      const rp = chats.filter(c => !BLOCKED_MODES.has(c.mode) && c.id !== pick?.exclude);
+    /* 기억해 둔 목록으로 바로 그리고, 새 목록이 오면 다시 그린다 — 예전엔 열 때마다 엔진 답을 기다리며 '로딩 중'이었다 */
+    {
       const list = ov.querySelector(`#${NS}-clist`);
-      if (!rp.length) { list.innerHTML = `<div style="text-align:center;padding:20px;color:var(--muted-foreground,#64748b)">RP/VN 채팅 없음</div>`; return; }
-      rp.sort((a,b)=>new Date(b.updatedAt??0)-new Date(a.updatedAt??0));
+      let rp = [];
+      const take = (chats) => {
+        rp = chats.filter(c => !BLOCKED_MODES.has(c.mode) && c.id !== pick?.exclude)
+          .sort((a,b)=>new Date(b.updatedAt??0)-new Date(a.updatedAt??0));
+      };
       /* ★ 한 채팅은 맨 위 '즐겨찾기' 묶음으로, 나머지는 최근 순. 검색은 이름으로 거른다. */
       const search = ov.querySelector(`.${NS}-cp-search`);
       const favs = () => new Set(Array.isArray(st.settings.favChats) ? st.settings.favChats : []);
@@ -15069,6 +15716,7 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
 </div>`;
       };
       const draw = () => {
+        if (!rp.length) { list.innerHTML = `<div style="text-align:center;padding:20px;color:var(--muted-foreground,#64748b)">RP/VN 채팅 없음</div>`; return; }
         const f = favs();
         const qy = search.value.trim().toLocaleLowerCase('ko');
         const hit = rp.filter(c => !qy || String(c.name || c.id).toLocaleLowerCase('ko').includes(qy));
@@ -15077,9 +15725,19 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
           : (top.length ? `<div class="${NS}-cp-sec">즐겨찾기</div>${top.map(c => row(c, true)).join('')}${rest.length ? `<div class="${NS}-cp-sec">전체</div>` : ''}` : '')
             + rest.map(c => row(c, false)).join('');
       };
-      draw();
+      const cached = cachedChatList();
+      if (cached) { take(cached); draw(); }
       search.addEventListener('input', draw);
       setTimeout(() => search.focus(), 30);
+      fetchChatList().then(chats => {
+        if (!ov.isConnected) return;
+        const keep = list.scrollTop;
+        take(chats); draw();
+        list.scrollTop = keep;
+      }).catch(err => {
+        if (!ov.isConnected || cached) return;   // 기억해 둔 목록이 떠 있으면 그대로 둔다
+        list.innerHTML = `<div style="color:var(--color-error,#ef4444);padding:10px">오류: ${esc(err.message)}</div>`;
+      });
       list.addEventListener('click', async (e) => {
         const star = e.target.closest(`.${NS}-j-cpstar`);
         if (star) {
@@ -15096,8 +15754,6 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
         st.selectedChatId = btn.dataset.cid; chatCache = null; saveSt(); ov.remove();
         await refreshChat(); toast('채팅을 골랐습니다 — 자동 감지는 꺼졌습니다.', 'success');
       });
-    } catch (err) {
-      ov.querySelector(`#${NS}-clist`).innerHTML = `<div style="color:var(--color-error,#ef4444);padding:10px">오류: ${esc(err.message)}</div>`;
     }
   }
 
@@ -16605,7 +17261,7 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
     // 서버에는 QR ID 목록만 있으므로, 이 확장 키만 빈 배열로 바꾼다.
     let metadataFailed = 0;
     try {
-      const chats = await GET('/chats');
+      const chats = await fetchChatList();
       if (Array.isArray(chats)) {
         for (const chat of chats) {
           try { await PATCH(`/chats/${chat.id}/metadata`, { [META_KEY]: [] }); }
@@ -16627,6 +17283,7 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
     // 서버로 맞추는 다른 기기가 옛 알림을 합쳐 되살리지 않게, 이 시각 이전 알림은 버린다
     st.notifsResetAt = new Date().toISOString();
     st.contHistory = [];
+    st.recentRuns = [];
     st.resultsInIdb = !!_idbOK;
     st.bulkInIdb = !!_idbOK;
     st.settings = {
@@ -16634,7 +17291,7 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
       refCharIds: [], panelWidth: 420, contentFontSize: 15, customCss: '', confirmDelete: true, favPinTop: true,
       contentSpacing: 0, contentLine: 0, contentWidth: 100, wrapWords: false,
       notifyOnDone: true, showContinueRecent: true, notifyOrphans: true, showGenMeta: false, liveAutoScroll: true,
-      threadChatView: false, threadFlow: true, showTurnBadges: true, partialEdit: true, anchorThreadHistory: true, chatArchive: false, archiveRecall: false, threadDigest: true,
+      threadChatView: false, threadFlow: true, showTurnBadges: true, partialEdit: true, dblEdit: true, anchorThreadHistory: true, chatArchive: false, archiveRecall: false, threadDigest: true,
       
       askTitleOnGen: false, aiTitleOnGen: false, aiTitleSameCall: false, aiTitlePrompt: '', batchTitlePrompt: '', titleConnectionId: null,
       resetRefCharAfterGen: false, serverMaxConcurrent: 4, autoDetect: true, skinWindows: true, skinWinV2: true, translateFromLang: '자동 감지',
@@ -16648,6 +17305,9 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
     _fullPresetCache.clear();
     localStorage.removeItem(SK);
     localStorage.removeItem(SK_RGX);
+    localStorage.removeItem(SK_TITLES);
+    localStorage.removeItem(SK_CHATS);
+    localStorage.removeItem(SK_CTX);
     // 기본 양식은 데이터가 아니라 확장이 제공하는 것이다. 전체 삭제 뒤에도 바로 다시 선다.
     ensureSeedForms();
     saveSt();
@@ -17274,6 +17934,8 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
         `결과 보기에서 이어쓰기 · 다시 생성을 누르면 아래 '쓰는 중' 칸으로 내려가고, 글이 늘면 따라 내려갑니다. 끄면 읽던 자리에 그대로 있습니다.`)}
       ${setToggleRow('partialedit', '글을 고르면 고치기 단추 띄우기', st.settings.partialEdit !== false,
         `결과 글을 드래그해 고르면 고친 부분만 다시 쓰는 단추가 뜹니다. 끄면 글을 골라도 아무것도 뜨지 않습니다.`)}
+      ${setToggleRow('dbledit', '본문 더블클릭으로 수정', st.settings.dblEdit !== false,
+        `결과 본문을 더블클릭하면 수정 단추를 누른 것처럼 그 자리에서 입력칸으로 바뀝니다. 이어 보기에서는 지금 고른 편만 해당합니다.`)}
       ${setToggleRow('favpin', '⭐ 양식을 목록 맨 위로 고정', st.settings.favPinTop)}
     </div>
 
@@ -17373,20 +18035,24 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
       <div class="${NS}-help-note" id="${NS}-help-batchtitle" hidden>
         <b>제목 짓기</b> — 지금 채팅에서 <b>제목이 없는 결과</b>에 AI 가 제목을 붙입니다. 이미 제목이 있는 결과는
         건드리지 않습니다.<br>
+        <b>다시 짓기</b> — <b>제목이 있는 결과</b>의 제목을 AI 가 새로 짓습니다. 뒤 편의 <code>옛 제목 2</code> 같은
+        번호 제목도 새 제목을 따라갑니다.<br>
         <b>편 번호</b> — AI 를 부르지 않습니다. 1편에 붙은 제목 뒤에 번호만 이어 붙입니다
         (<code>제목 2</code>, <code>제목 3</code> …). 같은 번호에 스와이프가 여럿이면 <code>제목 3-1</code>,
         <code>제목 3-2</code> 로 나눕니다. 1편에 제목이 없는 묶음은 기준이 없어 건너뜁니다.<br>
-        둘 다 바로 붙이지 않고 <b>검토 창</b>에서 고른 것만 적용합니다.
+        모두 바로 붙이지 않고 <b>검토 창</b>에서 고른 것만 적용합니다.
       </div>
       <div class="${NS}-field" style="margin-top:8px">
         <span class="${NS}-field-label">API 연결</span>
         <select class="${NS}-set-select" id="${NS}-s-titleconn"><option value="">생성과 같게</option></select>
       </div>
-      <div class="${NS}-ctx-note" style="margin:4px 0 0">제목은 프리셋 · 채팅 기록 없이 지시문과 글 앞부분만 보냅니다. 싸고 빠른 모델이면 충분합니다.</div>
+      <div class="${NS}-ctx-note" style="margin:4px 0 0">제목은 프리셋 · 채팅 기록 없이 지시문과 결과 본문만 보냅니다. 싸고 빠른 모델이면 충분합니다.</div>
       <div class="${NS}-archive-row" style="margin-top:8px">
         <span class="${NS}-archive-stat" id="${NS}-s-batchtitle-stat"></span>
         <button type="button" class="${NS}-btn ${NS}-btn-sm ${NS}-btn-ghost" id="${NS}-s-threadnum-run"
                 title="AI 없이 1편 제목 뒤에 번호를 붙입니다">편 번호</button>
+        <button type="button" class="${NS}-btn ${NS}-btn-sm ${NS}-btn-ghost" id="${NS}-s-batchtitle-redo"
+                title="제목이 있는 결과도 AI 가 새로 짓습니다">다시 짓기</button>
         <button type="button" class="${NS}-btn ${NS}-btn-sm ${NS}-btn-primary" id="${NS}-s-batchtitle-run">제목 짓기</button>
       </div>
       <details class="${NS}-adv" style="margin-top:8px">
@@ -17431,7 +18097,7 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
 
     <div class="${NS}-set-section">
       <label class="${NS}-set-label">유실 결과 찾기</label>
-      <div class="${NS}-ctx-note">저장소가 꼬여 목록에서 사라진 결과를 IndexedDB·서버에서 찾아 되살립니다. 직접 지운 결과는 찾지 않습니다.</div>
+      <div class="${NS}-ctx-note">저장소가 꼬여 목록에서 사라진 결과를 IndexedDB·서버·서버 생성 기록(최근 24시간)에서 찾아 되살립니다. 직접 지운 결과는 찾지 않습니다.</div>
       <div style="display:flex;gap:6px;margin-top:8px">
         <button class="${NS}-btn ${NS}-btn-ghost ${NS}-btn-sm" id="${NS}-s-recover">찾기</button>
       </div>
@@ -17596,7 +18262,7 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
         if (ta) { ta.value = BATCH_TITLE_PROMPT_DEFAULT; ta.focus(); }
       });
       ov.querySelector(`#${NS}-s-threadnum-run`)?.addEventListener('click', () => runThreadNumbering(showCount));
-      runBtn?.addEventListener('click', async () => {
+      const runWith = async (redo) => {
         // 하단 '저장'을 누르기 전이라도 지금 칸의 지시문으로 짓는다.
         // 이 버튼은 설정창을 닫지 않으므로 여기서 함께 저장해 둔다 — 메모리만 바꾸면
         // '취소'로 닫았을 때 화면·메모리·디스크가 서로 어긋난다.
@@ -17605,8 +18271,10 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
         if (st.settings.batchTitlePrompt !== nowPrompt || st.settings.titleConnectionId !== nowConn) {
           st.settings.batchTitlePrompt = nowPrompt; st.settings.titleConnectionId = nowConn; saveSt();
         }
-        await runBatchTitles(showCount);
-      });
+        await runBatchTitles(showCount, { redo });
+      };
+      runBtn?.addEventListener('click', () => runWith(false));
+      ov.querySelector(`#${NS}-s-batchtitle-redo`)?.addEventListener('click', () => runWith(true));
     }
     ov.querySelector(`#${NS}-s-recover`)?.addEventListener('click', () => openResultRecovery());
     ov.querySelector(`#${NS}-s-tprompt`)?.addEventListener('click', (e) => {
@@ -17696,6 +18364,7 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
       st.settings.showLiveText          = ov.querySelector(`#${NS}-s-livetext`).checked;
       st.settings.liveAutoScroll        = !!ov.querySelector(`#${NS}-s-livescroll`)?.checked;
       st.settings.partialEdit           = ov.querySelector(`#${NS}-s-partialedit`).checked;
+      st.settings.dblEdit               = !!ov.querySelector(`#${NS}-s-dbledit`)?.checked;
       st.settings.anchorThreadHistory   = ov.querySelector(`#${NS}-s-anchor`).checked;
       st.settings.chatArchive           = ov.querySelector(`#${NS}-s-archive`).checked;
       st.settings.archiveRecall         = ov.querySelector(`#${NS}-s-recall`).checked;
@@ -17901,6 +18570,13 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
       ? await resolveActiveChatId()
       : (st.selectedChatId || await resolveActiveChatId());
     if (seq !== _ctxSeq) return;   // 감지 중에 이미 다음 전환이 시작됨
+    // 기억해 둔 정보가 있으면 먼저 그린다 — 새 정보는 아래에서 받아 바꾼다
+    const memo = chatId && chatCache?.chatId !== chatId ? rememberedCtx(chatId) : null;
+    if (memo) {
+      chatCache = memo; attachedIds = memo.attachedIds;
+      applyChatCss();
+      renderChatBar(); renderBody();
+    }
     if (chatId) {
       try {
         const ctx = await loadChatContext(chatId);
@@ -17913,8 +18589,10 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
         attachedIds = ctx.attachedIds;
         st.attachedByChat[chatId] = [...ctx.attachedIds];
         saveSt();
+        rememberCtx(ctx);
       } catch (e) {
         if (seq !== _ctxSeq) return;
+        if (memo) { console.warn('[소르베] 채팅 정보 새로 받기 실패, 기억해 둔 정보 사용:', e.message); return; }
         // 컨텍스트 로드 실패해도 로컬 백업으로 QR 목록은 복원
         console.warn('[소르베] 채팅 컨텍스트 로드 실패, 로컬 백업 사용:', e.message);
         attachedIds = (Array.isArray(st.attachedByChat?.[chatId]) ? st.attachedByChat[chatId] : [])
@@ -18027,7 +18705,14 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
     window.visualViewport.addEventListener('scroll', applyViewportFit);
     applyViewportFit();
   }
+  /* 탭은 설정만 읽고 바로 붙인다. 저장소 준비 · 서버 결과 받기가 끝나기 전에 누르면 기억해 두었다가 끝나면 연다 */
+  let _ready = false, _openWhenReady = false;
   function togglePanel() {
+    if (!_ready) {
+      _openWhenReady = !_openWhenReady;
+      document.getElementById(`${NS}-tab`)?.classList.toggle(`${NS}-tab-wait`, _openWhenReady);
+      return;
+    }
     panelOpen = !panelOpen;
     if (!panelOpen && archiveOpen) { dropArchiveHistory(); archiveOpen = null; }
     if (!panelOpen) for (const k of Object.keys(archiveOpenByPage)) delete archiveOpenByPage[k];   // 창을 닫으면 열어 둔 결과도 잊는다
@@ -18038,7 +18723,7 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
     applyDim();
     if (panelOpen) { st.settings.uiPage = unreadNotifs() ? 'fresh' : 'studio'; applyUiPage(); applyFixShade(); }
     if (panelOpen) {
-      refreshConnections();   // 마리나라에서 커넥션이 바뀌었을 수 있으니 재로딩
+      // 연결 목록은 아래 refreshChat() 이 끝에 다시 받는다 — 여기서 또 받으면 두 번이다
       loadMarinaraRegexScripts(); // 마리나라 정규식 변경도 패널을 열 때마다 반영
       // 열 때 모든 결과(이어쓴 자식 포함) 접기
       const changed = collapseAllPanelResults();
@@ -18144,9 +18829,14 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
     document.removeEventListener('keydown', handleEscClose);
     document.removeEventListener('keydown', onArchiveKey, true);
     loadSt();
+    _ready = false;
+    injectStyles();
+    applyTabTop();
+    mountTab();
     await initResultStore();     // IndexedDB 준비 + 최초 1회 이전
     requestPersistentStorage();
-    if (serverSyncEnabled()) await enableAndMigrateServerSync(); // 토글을 켠 브라우저만 health 확인·병합
+    // 토글을 켠 브라우저만 health 확인·병합. 망이 느리면 탭이 깜빡이기만 하고 안 열리므로 6초까지만 기다리고 나머지는 뒤에서 마저 한다
+    if (serverSyncEnabled()) await Promise.race([enableAndMigrateServerSync(), new Promise(r => setTimeout(r, 6000))]);
     if (_disposed) { try { _idb?.close(); } catch {} return; }
     const removedPlaceholders = removeLegacyRecoveryPlaceholders();
     if (removedPlaceholders) {
@@ -18173,12 +18863,11 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
     applyContentFontSize();
     applyContentReading();
     bindFrameHeightListener();
-    mountTab();
+    renderNotifDot();   // 서버에서 받은 알림까지
     mountPanel();
     applyUiMode();   // 저장된 화면 모드(패널형/팝업형)를 탭과 패널에 입힌다
     applyUiPage();   // 작업실 / 보관함
     applySideToggle();
-    applyTabTop();
     ensureDim();
     document.addEventListener('keydown', handleEscClose);
     document.addEventListener('keydown', onArchiveKey, true);
@@ -18186,6 +18875,9 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
     document.addEventListener('pointerdown', notePress, true);
     loadConnections().then(() => { if (!_disposed && panelOpen) renderBody(); });
     loadMarinaraRegexScripts();
+    _ready = true;
+    document.getElementById(`${NS}-tab`)?.classList.remove(`${NS}-tab-wait`);
+    if (_openWhenReady) { _openWhenReady = false; togglePanel(); }
     console.log(`%c[소르베 ${VERSION}]%c 로드 완료 — 오른쪽 "소르베" 탭으로 여세요.`, 'color:#7c3aed;font-weight:bold','color:inherit');
   }
 

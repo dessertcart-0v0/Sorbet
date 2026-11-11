@@ -29,6 +29,12 @@ export async function sorbetRoutes(app) {
 
   app.get("/results", async () => ({ chats: await storage.listResultChats() }));
 
+  // 확장이 20초마다 묻는 '바뀌었나' — 상태 · 결과의 바뀐 시각만 준다. 바뀐 것만 따로 받아 간다
+  app.get("/sync-meta", async () => {
+    const [state, chats] = await Promise.all([storage.getStateStamp(), storage.listResultChats()]);
+    return { state, chats };
+  });
+
   app.get("/results/:chatId", async (req) => {
     const chatId = chatIdSchema.parse(req.params.chatId);
     const results = await storage.getResults(chatId);

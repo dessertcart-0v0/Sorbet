@@ -95,6 +95,29 @@ async function readJsonRecord   (path)                    {
   return parsed ;
 }
 
+// 파일마다 updatedAt 을 기억해 둔다. 확장은 20초마다 '바뀌었나'만 묻는데, 그때마다 파일을 통째로 읽어
+// JSON 을 풀면 결과가 쌓일수록 서버가 무거워진다. 수정 시각 · 크기가 그대로면 기억한 값을 쓴다.
+const stampCache = new Map();   // path → { mtimeMs, size, updatedAt }
+
+async function fileStamp(path) {
+  let info;
+  try { info = await stat(path); } catch { stampCache.delete(path); return null; }
+  const had = stampCache.get(path);
+  if (had && had.mtimeMs === info.mtimeMs && had.size === info.size) return { ...had };
+  const envelope = await readJsonRecord(path).catch(() => null);
+  const stamp = { mtimeMs: info.mtimeMs, size: info.size, updatedAt: envelope?.updatedAt ?? info.mtime.toISOString() };
+  stampCache.set(path, stamp);
+  return { ...stamp };
+}
+
+// 방금 쓴 파일은 다시 읽지 않고 기억해 둔다
+async function rememberStamp(path, updatedAt) {
+  try {
+    const info = await stat(path);
+    stampCache.set(path, { mtimeMs: info.mtimeMs, size: info.size, updatedAt });
+  } catch { stampCache.delete(path); }
+}
+
 export function createSorbetStorage() {
   return {
     rootDir: SORBET_ROOT,
@@ -115,8 +138,17 @@ export function createSorbetStorage() {
         updatedAt: new Date().toISOString(),
         data,
       };
-      await withWriteQueue(STATE_PATH, () => atomicWriteJson(STATE_PATH, envelope, SORBET_STATE_MAX_BYTES));
+      await withWriteQueue(STATE_PATH, async () => {
+        await atomicWriteJson(STATE_PATH, envelope, SORBET_STATE_MAX_BYTES);
+        await rememberStamp(STATE_PATH, envelope.updatedAt);
+      });
       return envelope;
+    },
+
+    // 공용 상태가 언제 바뀌었는지만 — 본문은 읽지 않는다
+    async getStateStamp() {
+      const stamp = await fileStamp(STATE_PATH);
+      return stamp ? { exists: true, updatedAt: stamp.updatedAt } : { exists: false, updatedAt: null };
     },
 
     async listResultChats() {
@@ -127,16 +159,11 @@ export function createSorbetStorage() {
           .filter((entry) => entry.isFile() && /^[A-Za-z0-9_-]{1,128}\.json$/.test(entry.name))
           .map(async (entry) => {
             const path = assertInsideDir(RESULTS_DIR, join(RESULTS_DIR, entry.name));
-            const info = await stat(path);
-            const envelope = await readJsonRecord                       (path);
-            return {
-              chatId: entry.name.slice(0, -5),
-              updatedAt: envelope?.updatedAt ?? info.mtime.toISOString(),
-              bytes: info.size,
-            };
+            const stamp = await fileStamp(path);
+            return stamp ? { chatId: entry.name.slice(0, -5), updatedAt: stamp.updatedAt, bytes: stamp.size } : null;
           }),
       );
-      return rows.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+      return rows.filter(Boolean).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
     },
 
     async getResults(chatId)                                        {
@@ -153,13 +180,17 @@ export function createSorbetStorage() {
         chatId: safeChatId,
         data,
       };
-      await withWriteQueue(path, () => atomicWriteJson(path, envelope, SORBET_RESULT_MAX_BYTES));
+      await withWriteQueue(path, async () => {
+        await atomicWriteJson(path, envelope, SORBET_RESULT_MAX_BYTES);
+        await rememberStamp(path, envelope.updatedAt);
+      });
       return envelope;
     },
 
     async deleteResults(chatId) {
       const path = resultPath(chatId);
       await withWriteQueue(path, () => rm(path, { force: true }));
+      stampCache.delete(path);
     },
 
     async clear() {
@@ -167,6 +198,7 @@ export function createSorbetStorage() {
         await rm(SORBET_ROOT, { recursive: true, force: true });
         await mkdir(RESULTS_DIR, { recursive: true });
       });
+      stampCache.clear();
     },
   };
 }
