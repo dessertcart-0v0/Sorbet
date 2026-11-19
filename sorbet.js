@@ -1,5 +1,5 @@
 /**
- * ✦ Marinara Engine Extension — 소르베 v1.2.0 ✦
+ * ✦ Marinara Engine Extension — 소르베 v1.2.2 ✦
  *
  * 구조
  * ─────────────────────────────────────────────
@@ -55,7 +55,7 @@
   /* ══════════════════════════════════════════════════════════
    * § 0  상수
    * ══════════════════════════════════════════════════════════ */
-  const VERSION = 'v1.2.0';               // 헤더 주석과 이 값을 함께 올릴 것
+  const VERSION = 'v1.2.2';               // 헤더 주석과 이 값을 함께 올릴 것
   const NS    = 'srb';
   const SK    = 'srb-v1';                 // localStorage: 소규모 설정 + IndexedDB 장애 시 기존 데이터 폴백
   const RECENT_RUNS_MAX = 60;
@@ -1428,6 +1428,60 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
     });
   }
 
+  /* 같은 편 ID가 트리 두 곳에 있으면 하나만 남긴다. 한쪽 기기에서 자리를 옮긴(흐름도 · 떼기 · 다른 결과로) 편을
+     다른 쪽 옛 트리와 합치면, 합치기가 같은 층에서만 짝을 맞추느라 옛 자리와 새 자리에 둘 다 남았다.
+     parents(이기는 쪽에서 편 ID → 부모 ID, 맨 위는 '')의 자리를 남기고, 지우는 사본에만 있던 뒤 편은 남는 쪽으로 옮긴다.
+     원래 배열은 건드리지 않고, 겹친 게 있을 때만 새 배열을 돌려준다. */
+  function treeParents(list, out = new Map(), pid = '') {
+    for (const x of (Array.isArray(list) ? list : [])) {
+      if (!x?.id) continue;
+      if (!out.has(x.id)) out.set(x.id, pid);
+      treeParents(x.children, out, x.id);
+    }
+    return out;
+  }
+  function dedupeTreeIds(list, parents) {
+    if (!Array.isArray(list)) return { list, removed: 0 };
+    if (collectTreeIds(list).size === (function count(a) { let n = 0; for (const x of a) if (x?.id) { n += 1; if (Array.isArray(x.children)) n += count(x.children); } return n; })(list)) {
+      return { list, removed: 0 };
+    }
+    const cloneShape = arr => arr.map(x => (x && typeof x === 'object')
+      ? { ...x, ...(Array.isArray(x.children) ? { children: cloneShape(x.children) } : {}) } : x);
+    const out = cloneShape(list);
+    let removed = 0;
+    for (;;) {
+      const seen = new Map();
+      let pair = null;
+      (function walk(arr, pid) {
+        for (const x of arr) {
+          if (pair) return;
+          if (!x?.id) continue;
+          const had = seen.get(x.id);
+          if (had) { pair = [had, { node: x, arr, pid }]; return; }
+          seen.set(x.id, { node: x, arr, pid });
+          if (Array.isArray(x.children)) walk(x.children, x.id);
+        }
+      })(out, '');
+      if (!pair) break;
+      const want = parents?.get(pair[0].node.id);
+      const [keep, drop] = (pair[1].pid === want && pair[0].pid !== want) ? [pair[1], pair[0]] : pair;
+      drop.arr.splice(drop.arr.indexOf(drop.node), 1);
+      if (Array.isArray(drop.node.children) && drop.node.children.length) {
+        if (!Array.isArray(keep.node.children)) keep.node.children = [];
+        mergeTreeInto(keep.node.children, drop.node.children);   // 지운 사본보다 늘 적게 붙으므로 끝난다
+      }
+      removed += 1;
+    }
+    (function clamp(arr) {
+      for (const n of arr) {
+        if (!Array.isArray(n?.children)) continue;
+        if (!(n.activeChild < n.children.length)) n.activeChild = Math.max(0, n.children.length - 1);
+        clamp(n.children);
+      }
+    })(out);
+    return { list: out, removed };
+  }
+
   function mergeStoredResults(stored, current) {
     const out = {};
     const qrIds = new Set([...Object.keys(stored || {}), ...Object.keys(current || {})]);
@@ -1435,10 +1489,55 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
       const byChat = {};
       const chatIds = new Set([...Object.keys(stored?.[qrId] || {}), ...Object.keys(current?.[qrId] || {})]);
       for (const chatId of chatIds) {
-        const merged = mergeResultTree(stored?.[qrId]?.[chatId], current?.[qrId]?.[chatId]);
+        const cur = current?.[qrId]?.[chatId];
+        const merged = dedupeTreeIds(mergeResultTree(stored?.[qrId]?.[chatId], cur), treeParents(cur)).list;
         if (merged.length) byChat[chatId] = merged;
       }
       if (Object.keys(byChat).length) out[qrId] = byChat;
+    }
+    return dedupeAcrossForms(out, current);
+  }
+  /* 같은 결과가 양식 칸 두 곳에 있으면 하나만 남긴다. 한쪽 기기에서 '양식 바꾸기'로 옮긴 결과를 다른 쪽 옛 목록과 합치면
+     옛 양식 칸과 새 양식 칸에 둘 다 남았다. 이기는 쪽(current)의 양식 칸 것을 남기고, 지우는 사본에만 있던 뒤 편은 옮긴다 */
+  function dedupeAcrossForms(out, current) {
+    const chatIds = new Set();
+    for (const byChat of Object.values(out)) Object.keys(byChat || {}).forEach(c => chatIds.add(c));
+    for (const chatId of chatIds) {
+      const first = new Map();   // 편 ID → 처음 나온 양식 칸
+      let clash = false;
+      for (const [qrId, byChat] of Object.entries(out)) {
+        for (const id of collectTreeIds(byChat?.[chatId])) {
+          if (!first.has(id)) first.set(id, qrId); else if (first.get(id) !== qrId) clash = true;
+        }
+      }
+      if (!clash) continue;
+      const home = new Map();    // 편 ID → 이기는 쪽에서의 양식 칸
+      for (const [qrId, byChat] of Object.entries(current || {})) {
+        for (const id of collectTreeIds(byChat?.[chatId])) if (!home.has(id)) home.set(id, qrId);
+      }
+      const homeOf = (id) => home.get(id) ?? first.get(id);
+      const dropped = [];
+      for (const [qrId, byChat] of Object.entries(out)) {
+        if (!Array.isArray(byChat?.[chatId])) continue;
+        const strip = (arr) => arr.flatMap(n => {
+          if (n?.id && homeOf(n.id) !== qrId) { dropped.push(n); return []; }
+          return Array.isArray(n?.children) && n.children.length ? [{ ...n, children: strip(n.children) }] : [n];
+        });
+        const next = strip(byChat[chatId]);
+        if (next.length) byChat[chatId] = next; else delete byChat[chatId];
+      }
+      for (const n of dropped) {
+        if (!Array.isArray(n.children) || !n.children.length) continue;
+        const list = out[homeOf(n.id)]?.[chatId];
+        const find = (arr) => { for (const x of (Array.isArray(arr) ? arr : [])) { if (x?.id === n.id) return x; const f = find(x?.children); if (f) return f; } return null; };
+        const kept = find(list);
+        if (!kept) continue;
+        const have = new Set();
+        for (const byChat of Object.values(out)) collectTreeIds(byChat?.[chatId], have);
+        const extra = n.children.filter(k => k?.id && !have.has(k.id));
+        if (extra.length) kept.children = [...(Array.isArray(kept.children) ? kept.children : []), ...extra];
+      }
+      for (const qrId of Object.keys(out)) if (!Object.keys(out[qrId] || {}).length) delete out[qrId];
     }
     return out;
   }
@@ -2456,8 +2555,10 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
     let n = 0;
     for (const [cid, list] of Object.entries(st.results?.[TRASH_KEY] || {})) {
       if (!Array.isArray(list)) continue;
-      for (let i = list.length - 1; i >= 0; i--) if (trashExpired(list[i])) { list.splice(i, 1); n++; }
-      if (n) markResultsDirty(cid);
+      let here = 0;
+      for (let i = list.length - 1; i >= 0; i--) if (trashExpired(list[i])) { list.splice(i, 1); here++; }
+      if (here) markResultsDirty(cid);   // 비운 채팅만 다시 쓴다
+      n += here;
     }
     return n;
   }
@@ -3864,11 +3965,19 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
       if (byChat && Object.prototype.hasOwnProperty.call(byChat, chatId)) delete byChat[chatId];
       if (byChat && !Object.keys(byChat).length) delete st.results[qrId];
     }
+    let fixed = 0;
     for (const [qrId, list] of Object.entries(byQr || {})) {
-      if (Array.isArray(list) && list.length) (st.results[qrId] ??= {})[chatId] = list;
+      if (!Array.isArray(list) || !list.length) continue;
+      // 예전 판이 겹쳐 올린 편(같은 ID가 두 자리)을 정리한다 — 정리했으면 고친 것을 다시 올린다
+      const d = dedupeTreeIds(list, null);
+      fixed += d.removed;
+      (st.results[qrId] ??= {})[chatId] = d.list;
     }
     // 서버에서 받은 그대로다 — 다음 저장 때 같은 내용을 서버에 되올리지 않게 기억한다(두 기기가 서로 주고받던 것)
-    _srvSig.set(chatId, JSON.stringify(resultSnapshotForChat(chatId)));
+    const raw = {};
+    for (const [qrId, list] of Object.entries(byQr || {})) if (Array.isArray(list) && list.length) raw[qrId] = { [chatId]: list };
+    _srvSig.set(chatId, JSON.stringify(resultSnapshotForChat(chatId, raw)));
+    if (fixed) markResultsDirty(chatId);
   }
 
   /* 기기마다 따로 두는 설정 — 서버에 올리지 않고, 서버에서 받아도 이 기기 값을 지킨다.
@@ -4142,7 +4251,7 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
         for (const chatId of _offlineEdits) {
           for (const [qrId, byChat] of Object.entries(localResults || {})) {
             if (!Array.isArray(byChat?.[chatId]) || !byChat[chatId].length) continue;
-            (mergedResults[qrId] ??= {})[chatId] = mergeResultTree(serverResults?.[qrId]?.[chatId], byChat[chatId]);
+            (mergedResults[qrId] ??= {})[chatId] = dedupeTreeIds(mergeResultTree(serverResults?.[qrId]?.[chatId], byChat[chatId]), treeParents(byChat[chatId])).list;
           }
         }
         st.results = dropDeletedResults(mergedResults, localSeen, serverResults);
@@ -8156,7 +8265,7 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
 .${NS}-flow-detach.${NS}-flow-off { visibility:hidden; }
 .${NS}-flow-detach.${NS}-flow-armed { opacity:1; color:var(--foreground,#0f172a); }
 .${NS}-flow-scroll {
-  margin-top:8px; overflow:auto; max-height:min(60vh, 520px); border-radius:8px;
+  margin-top:8px; overflow:auto; height:min(60vh, 520px); border-radius:8px;
   border:1px solid var(--border,rgba(148,163,184,.25));
   background:color-mix(in srgb, var(--muted,#94a3b8) 6%, transparent);
 }
@@ -8406,6 +8515,7 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
 .${NS}-md-table tbody tr:last-child td { border-bottom:0; }
 
 @keyframes ${NS}-spin { to { transform:rotate(360deg); } }
+.${NS}-reloading > svg { animation:${NS}-spin .8s linear infinite; }
 .${NS}-spin { display:inline-block; width:11px; height:11px; flex-shrink:0;
   border:2px solid transparent; border-top-color:currentColor; border-radius:50%;
   animation:${NS}-spin .65s linear infinite; }
@@ -9388,11 +9498,16 @@ input[type=range].${NS}-range::-webkit-slider-thumb { -webkit-appearance:none; w
 
       // 생성 중에 이 갈래가 지워졌을 수 있다. await 이전에 잡아 둔 parent 에
       // 그대로 push 하면 끊긴 객체에 붙어 결과가 조용히 사라진다.
-      const liveHit = findSegRoot(qrId, chatId, seg.id);
+      /* 다시 만들던 그 스와이프만 지웠으면(새 것을 기다리며 옛 것을 지우는 흔한 순서) 앞 편은 남아 있다 —
+         새 스와이프는 앞 편 뒤에 그대로 붙인다. 앞 편까지 사라졌을 때만 버린다 */
+      const segHit = findSegRoot(qrId, chatId, seg.id);
+      const parHit = segHit?.parent ? null : findSegRoot(qrId, chatId, parent.id);
+      const liveHit = segHit?.parent ? segHit : (parHit ? { root: parHit.root, parent: parHit.seg } : null);
       if (!liveHit?.parent) {
         finalizePendingRun(res?.runId);   // 회수 목록에서도 뺀다 — 안 그러면 다음에 켤 때 이 결과가 되살아난다
-        toast('다시 생성할 편이 생성 중에 삭제되었습니다.', 'warning'); return;
+        toast('다시 생성할 편의 앞 편이 생성 중에 삭제되어 결과를 붙일 자리가 없습니다.', 'warning'); return;
       }
+      if (!Array.isArray(liveHit.parent.children)) liveHit.parent.children = [];
       /* 바깥 parent 와 이름이 겹치면 이 블록 전체가 TDZ 가 되어,
          위쪽에서 parent 를 읽는 코드가 "Cannot access before initialization" 으로 죽는다. */
       const livePar = liveHit.parent;
@@ -13312,6 +13427,8 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
     for (const byChat of Object.values(st.results || {})) collectTreeIds(byChat?.[chatId], memIds);
     report.memBefore = memIds.size;
 
+    const memParents = new Map();   // 합치기 전 이 기기의 자리 — 겹친 편은 이 자리를 남긴다
+    for (const [qrId, byChat] of Object.entries(st.results || {})) memParents.set(qrId, treeParents(byChat?.[chatId]));
     const merge = (byQr, label) => {
       if (!byQr || typeof byQr !== 'object') return;
       let got = 0;
@@ -13335,7 +13452,12 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
 
     const dedupeChat = () => {
       let n = 0;
-      for (const byChat of Object.values(st.results || {})) n += dedupeRunCopies(byChat?.[chatId]);
+      for (const [qrId, byChat] of Object.entries(st.results || {})) {
+        if (!Array.isArray(byChat?.[chatId])) continue;
+        const d = dedupeTreeIds(byChat[chatId], memParents.get(qrId));
+        if (d.removed) { byChat[chatId] = d.list; n += d.removed; }
+        n += dedupeRunCopies(byChat[chatId]);
+      }
       report.deduped += n;
     };
     dedupeChat();
@@ -13386,7 +13508,17 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
       if (nf.gone) continue;                 // 사용자가 직접 지운 결과 — 유실이 아니다
       if (!after.has(nf.rid)) report.missingNotifs.push(nf);
     }
-    if (report.added || report.deduped) { saveSt(); markResultsDirty(chatId); }
+    if (report.added || report.deduped) {
+      /* 되살린 편은 "마지막으로 서버와 맞춘 목록"(기준)에서 뺀다. 기준에 남아 있으면 다음에 켤 때
+         "기준에는 있는데 서버에 없다 = 다른 기기에서 지웠다"로 읽혀 되살린 것이 다시 빠졌다(dropDeletedResults) */
+      const base = _syncBase.results?.[chatId];
+      if (Array.isArray(base)) {
+        const back = new Set([...after].filter(id => !memIds.has(id)));
+        if (back.size) { _syncBase.results[chatId] = base.filter(id => !back.has(id)); saveSyncBase(); }
+      }
+      saveSt(); markResultsDirty(chatId);
+      try { await flushResults(); } catch {}   // 창을 닫기 전에 디스크 · 서버에 바로 쓴다
+    }
     return report;
   }
 
@@ -14800,14 +14932,13 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
   <span class="${NS}-flow-no">${m.depth}-${m.idx}</span><span class="${NS}-flow-name">${esc(name)}</span></button>`;
       }
       canvas.style.width = `${W}px`; canvas.style.height = `${H}px`;
-      /* 창 폭은 흐름도에 맞추되 소르베 창보다 넓어지지 않는다 — 넘치는 만큼은 흐름도 안에서 옆으로 민다.
-         소르베 창이 화면 한쪽에 붙어 있으면 그 위에 오도록 옆으로 옮긴다 */
-      const modal = ov.querySelector(`.${NS}-flow-modal`), cs = getComputedStyle(modal);
+      /* 창은 흐름도 크기와 상관없이 늘 가장 큰 폭(1100px, 소르베 창 폭까지)으로 연다 — 칸이 적어도 단추가 잘리지 않게.
+         넘치는 만큼은 흐름도 안에서 옆으로 민다. 소르베 창이 화면 한쪽에 붙어 있으면 그 위에 오도록 옆으로 옮긴다 */
+      const modal = ov.querySelector(`.${NS}-flow-modal`);
       const pr = document.getElementById(`${NS}-panel`)?.getBoundingClientRect();
       const room = pr?.width ? Math.max(280, Math.min(pr.width - 24, window.innerWidth - 24)) : window.innerWidth * 0.94;
-      const want = Math.ceil(W + 2 + parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight) + parseFloat(cs.borderLeftWidth) + parseFloat(cs.borderRightWidth));
-      const mw = Math.min(want, room);
-      modal.style.width = `${mw}px`; modal.style.maxWidth = `${room}px`; modal.style.minWidth = `${Math.min(mw, 420)}px`;
+      const mw = Math.min(1100, room);
+      modal.style.width = `${mw}px`; modal.style.maxWidth = `${room}px`; modal.style.minWidth = '0';
       if (pr?.width) {
         const shift = (pr.left + pr.width / 2) - window.innerWidth / 2;
         const lim = Math.max(0, (window.innerWidth - mw) / 2 - 8);
@@ -19075,6 +19206,7 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
 <div class="${NS}-hd">
   <div class="${NS}-hd-title">${svg('sorbet')}<span>소르베</span></div>
   <div style="display:flex;gap:5px;align-items:center">
+    <button class="${NS}-btn ${NS}-btn-icon" id="${NS}-reload-btn" title="새로고침 — 서버 · 채팅 정보를 다시 받기" aria-label="새로고침">${svg('refresh')}</button>
     <button class="${NS}-btn ${NS}-btn-icon" id="${NS}-settings-btn" title="설정">${svg('gear')}</button>
     <button class="${NS}-btn ${NS}-btn-icon" id="${NS}-close-btn" title="닫기">${svg('close')}</button>
   </div>
@@ -19113,6 +19245,29 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
 
     panel.querySelector(`#${NS}-close-btn`).addEventListener('click', togglePanel);
     panel.querySelector(`#${NS}-settings-btn`).addEventListener('click', () => openSettingsPage());
+    /* 새로고침 — 페이지를 다시 열지 않고 서버의 새 결과와 채팅 정보를 받아 다시 그린다.
+       생성 중에는 서버 받기를 건너뛴다(pullServerChanges 가 막는다 — 방금 만든 편이 덮이지 않게) */
+    panel.querySelector(`#${NS}-reload-btn`).addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      if (btn.disabled) return;
+      btn.disabled = true; btn.classList.add(`${NS}-reloading`);
+      let note = '새로 받아 왔습니다.', kind = 'success';
+      try {
+        if (serverSyncEnabled()) {
+          if (generatingKeys.size) { note = '생성 중이라 서버 결과는 받지 않았습니다. 채팅 정보만 새로 받았습니다.'; kind = 'info'; }
+          else if (_serverSyncReady) await pullServerChanges();
+          else await enableAndMigrateServerSync();
+          if (_serverSyncLastError) { note = `서버에서 받지 못했습니다: ${_serverSyncLastError}`; kind = 'error'; }
+        }
+        await refreshChat();
+        if (panelOpen) renderBody();
+      } catch (err) {
+        note = `새로고침 실패: ${err?.message || err}`; kind = 'error';
+      } finally {
+        btn.disabled = false; btn.classList.remove(`${NS}-reloading`);
+      }
+      toast(note, kind);
+    });
     panel.querySelectorAll(`.${NS}-nav .${NS}-j-page`).forEach(b =>
       b.addEventListener('click', () => setUiPage(b.dataset.page)));
     panel.querySelector(`.${NS}-j-chatchg`)?.addEventListener('click', openChatPicker);
