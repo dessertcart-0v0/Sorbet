@@ -1,5 +1,5 @@
 /**
- * ✦ Marinara Engine Extension — 소르베 v1.2.2 ✦
+ * ✦ Marinara Engine Extension — 소르베 v1.2.3 ✦
  *
  * 구조
  * ─────────────────────────────────────────────
@@ -55,7 +55,7 @@
   /* ══════════════════════════════════════════════════════════
    * § 0  상수
    * ══════════════════════════════════════════════════════════ */
-  const VERSION = 'v1.2.2';               // 헤더 주석과 이 값을 함께 올릴 것
+  const VERSION = 'v1.2.3';               // 헤더 주석과 이 값을 함께 올릴 것
   const NS    = 'srb';
   const SK    = 'srb-v1';                 // localStorage: 소규모 설정 + IndexedDB 장애 시 기존 데이터 폴백
   const RECENT_RUNS_MAX = 60;
@@ -2399,6 +2399,9 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
     return false;
   }
   const RX_BLOCK_TAG  = /<\s*(div|section|article|main|header|footer|nav|aside|figure|figcaption|details|summary|blockquote)\b/gi;
+  /* 줄바꿈을 LF 하나로 맞춘다. 모델 · 중계 서버에 따라 줄바꿈이 CR 만으로(또는 U+2028 · U+2029 · U+0085 로) 올 때가 있다.
+     수정 칸(textarea)은 그것도 줄바꿈으로 보여 주지만, 본문은 LF 로만 줄을 나눠서 글이 한 덩어리로 붙는다 */
+  const normNL = (t) => String(t ?? '').replace(/\r\n?|[\u2028\u2029\u0085]/g, '\n');
   function looksLikeHtml(t) {
     if (RX_HTML_DOC.test(t)) return true;            // 문서/스타일/스크립트 → 확실한 HTML
     if (hasDecoratedBlockTag(t)) return true;        // style · class 붙은 블록 태그 → 디자인된 출력
@@ -3899,7 +3902,7 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
         + `(모바일에서 화면이 꺼지거나 브라우저를 백그라운드로 내리면 생성 스트림이 끊깁니다. `
         + `생성이 끝날 때까지 화면을 켜 두세요)`);
     }
-    return { content:resultContent ?? streamedContent, runId:serverRunId };
+    return { content:normNL(resultContent ?? streamedContent), runId:serverRunId };
   }
   async function PATCH(path, body) {
     const r = await fetch(`/api${path}`, { method:'PATCH', headers: HDR_J, body: JSON.stringify(body) });
@@ -5712,7 +5715,7 @@ const DEFAULT_CSS = `/* 소르베 기본 디자인 (자유롭게 수정하세요
       if (info.status === 'done') {
         /* 여기서 지우면 안 된다. 결과를 트리에 붙이기 전에 탭이 죽으면
            서버에도 없고 우리에게도 없는 상태가 된다. 붙인 뒤에 지운다. */
-        return { content: info.content ?? '', runId };
+        return { content: normNL(info.content ?? ''), runId };
       }
     }
   }
@@ -9883,11 +9886,17 @@ input[type=range].${NS}-range::-webkit-slider-thumb { -webkit-appearance:none; w
   let _iframeSeq = 0;
   function renderContent(raw) {
     if (!raw) return '';
+    raw = normNL(raw);   // 이미 저장된 결과도 그릴 때 바로잡는다
 
     // 코드블록(```) 안은 "코드를 보여주려는" 의도이므로 판별에서 제외.
     const withoutCode = raw.replace(RX_CODEBLOCK, '');
     if (looksLikeHtml(withoutCode)) {
-      return renderHtmlSandbox(raw);
+      /* 줄글 사이에 HTML 상자가 낀 글(표시 정규식이 일부를 꾸민 상자로 바꾼 경우 등)은 통째로 HTML 로 그리지 않는다 —
+         그러면 줄바꿈이 다 붙고 코드블록이 기호째 보인다. 상자만 HTML 로, 나머지는 마크다운으로 그린다 */
+      const mixed = splitProseAndHtml(raw);
+      if (!mixed) return renderHtmlSandbox(raw);
+      return mixed.map(p => p.type === 'html' ? renderHtmlBox(p.text)
+        : p.type === 'code' ? renderCodePart(p) : md(p.text)).join('');
     }
 
     // ```lang\ncode``` 코드블록 추출
@@ -9903,14 +9912,120 @@ input[type=range].${NS}-range::-webkit-slider-thumb { -webkit-appearance:none; w
     if (last < raw.length) parts.push({ type:'md', text: raw.slice(last) });
 
     return parts.map(p => {
-      if (p.type === 'code') {
-        // 모델이 HTML을 ```html 로 감싸 내보내는 일이 흔하다. HTML 블록은 코드로 보여주지 않고 렌더한다.
-        // (json·프롬프트 등 다른 언어 블록은 그대로 코드로 둔다)
-        if (RX_HTML_FENCE_LANG.test(p.lang) && looksLikeHtml(p.text)) return renderHtmlSandbox(p.text);
-        return `<pre class="${NS}-code"><div class="${NS}-code-lang">${esc(p.lang||'code')}</div><code>${esc(p.text)}</code></pre>`;
-      }
+      if (p.type === 'code') return renderCodePart(p);
       return md(p.text);
     }).join('');
+  }
+  /* 줄글 사이의 HTML 상자 — 스크립트 없이 꾸밈만 그린다. 스크립트를 켜지 않으므로 같은 출처로 두어도 안전하고,
+     그래야 바깥에서 높이를 직접 잴 수 있다(sizeHtmlBox). 엔진의 보안 정책이 틀 안 스크립트를 막아
+     틀이 스스로 높이를 알려 주는 방식(renderHtmlSandbox)은 상자마다 빈 칸이 크게 남는다 */
+  function renderHtmlBox(html) {
+    const id = `${NS}-box-${(++_iframeSeq)}-${Date.now().toString(36)}`;
+    const doc = `<!DOCTYPE html><html><head><meta charset="utf-8">
+<style>
+  html,body{margin:0;padding:0;background:transparent;line-height:1.7;word-break:break-word;}
+  body{padding:2px 0;}
+  img,video,canvas,svg{max-width:100%;height:auto;}
+  a{color:#7c9cff;}
+</style></head><body>${html}</body></html>`;
+    const srcdoc = doc.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
+    return `<iframe id="${id}" class="${NS}-html-box" data-srb-sized="1" sandbox="allow-same-origin allow-popups" scrolling="no"
+      srcdoc="${srcdoc}" style="width:100%;height:2.4em;border:0;background:transparent;display:block"></iframe>`;
+  }
+  // 상자 높이를 내용에 맞추고, 글자색 · 글꼴 · 밝기를 둘러싼 본문과 같게 한다
+  function sizeHtmlBox(fr) {
+    let doc = null;
+    try { doc = fr.contentDocument; } catch {}
+    if (!fr.isConnected || !doc?.body) return;
+    const cs = getComputedStyle(fr.parentElement || fr);
+    const root = doc.documentElement.style;
+    root.color = cs.color; root.fontSize = cs.fontSize; root.fontFamily = cs.fontFamily;
+    root.colorScheme = getComputedStyle(fr).colorScheme || 'normal';
+    const h = Math.ceil(doc.body.getBoundingClientRect().height);
+    if (h > 0) fr.style.height = `${h}px`;
+  }
+  function handleHtmlBoxLoad(e) {
+    const fr = e.target;
+    if (!fr?.classList?.contains(`${NS}-html-box`)) return;
+    sizeHtmlBox(fr);
+    setTimeout(() => sizeHtmlBox(fr), 300);    // 글꼴 · 그림이 늦게 들어올 때
+    setTimeout(() => sizeHtmlBox(fr), 1200);
+  }
+  function resizeHtmlBoxes() { document.querySelectorAll(`.${NS}-html-box`).forEach(sizeHtmlBox); }
+  function renderCodePart(p) {
+    // 모델이 HTML을 ```html 로 감싸 내보내는 일이 흔하다. HTML 블록은 코드로 보여주지 않고 렌더한다.
+    // (json·프롬프트 등 다른 언어 블록은 그대로 코드로 둔다)
+    if (RX_HTML_FENCE_LANG.test(p.lang) && looksLikeHtml(p.text)) return renderHtmlSandbox(p.text);
+    return `<pre class="${NS}-code"><div class="${NS}-code-lang">${esc(p.lang||'code')}</div><code>${esc(p.text)}</code></pre>`;
+  }
+
+  /* 줄글 + HTML 상자가 섞인 글을 조각으로 나눈다 → [{type:'md'|'code'|'html', text, lang?}], 섞인 글이 아니면 null.
+     섞인 글로 보는 조건(전부):
+       · 문서 태그(html · head · body · doctype)가 없다
+       · 맨 바깥 블록 요소의 여닫는 짝이 다 맞는다
+       · 상자 밖 글이 빈 줄로 문단을 나눈 줄글이다(태그로 시작하지 않는 문단이 셋 이상)
+     HTML 로 쓴 결과물(문단을 태그로 나눈 것 · 상자 하나로 감싼 것)은 여기 걸리지 않아 예전처럼 통째로 그린다.
+     맨 바깥의 <style> · <script> 는 상자마다 앞뒤에 같이 넣는다 — 상자들이 같은 꾸밈을 쓴다 */
+  const RX_HTML_ROOT = /<\s*(?:html|head|body)\b|<!doctype/i;
+  const RX_ANY_OPEN = /<([a-z][a-z0-9-]*)\b[^>]*?(\/?)>/gi;
+  const RX_VOID_TAG = /^(?:area|base|col|embed|hr|input|link|meta|param|source|track|wbr)$/i;
+  const RX_PARA_BREAK = /\n[ \t]*\n/;
+  const RX_STARTS_TAG = /^\s*</;
+  function splitHtmlBlocks(text) {
+    const parts = [];
+    let pos = 0;
+    RX_ANY_OPEN.lastIndex = 0;
+    let m;
+    while ((m = RX_ANY_OPEN.exec(text)) !== null) {
+      const name = m[1].toLowerCase();
+      if (RX_INLINE_TAG_NAME.test(name) || name === 'blockquote' || name === 'hr') continue;   // 마크다운 쪽에서 살리는 태그
+      let end = m.index + m[0].length;
+      if (!m[2] && !RX_VOID_TAG.test(name)) {
+        const rx = new RegExp(`<(/?)${name}(?![a-z0-9-])[^>]*>`, 'gi');
+        rx.lastIndex = end;
+        let depth = 1, t;
+        while (depth > 0 && (t = rx.exec(text)) !== null) {
+          if (t[1]) depth -= 1; else if (!t[0].endsWith('/>')) depth += 1;
+          end = t.index + t[0].length;
+        }
+        if (depth > 0) return null;   // 안 닫혔다 — 섞인 글로 다루지 않는다
+      }
+      if (m.index > pos) parts.push({ type: 'md', text: text.slice(pos, m.index) });
+      parts.push({ type: 'html', tag: name, text: text.slice(m.index, end) });
+      pos = end;
+      RX_ANY_OPEN.lastIndex = end;
+    }
+    if (pos < text.length) parts.push({ type: 'md', text: text.slice(pos) });
+    return parts;
+  }
+  function splitProseAndHtml(raw) {
+    if (RX_HTML_ROOT.test(raw.replace(RX_CODEBLOCK, ''))) return null;
+    const parts = [];
+    const addText = (text) => {
+      const sub = splitHtmlBlocks(text);
+      if (!sub) return false;
+      parts.push(...sub);
+      return true;
+    };
+    let last = 0, m;
+    RX_CODEBLOCK.lastIndex = 0;
+    while ((m = RX_CODEBLOCK.exec(raw)) !== null) {
+      if (m.index > last && !addText(raw.slice(last, m.index))) { RX_CODEBLOCK.lastIndex = 0; return null; }
+      parts.push({ type: 'code', lang: m[1] || '', text: m[2] });
+      last = m.index + m[0].length;
+    }
+    if (last < raw.length && !addText(raw.slice(last))) return null;
+    const prose = parts.filter(p => p.type === 'md').map(p => p.text).join('\n');
+    if (!parts.some(p => p.type === 'html')) return null;
+    // 빈 줄로 나뉜 문단 가운데 태그로 시작하지 않는 것(= 그냥 쓴 글)이 셋 이상이어야 줄글이다
+    if (prose.split(RX_PARA_BREAK).filter(x => x.trim() && !RX_STARTS_TAG.test(x)).length < 3) return null;
+    // 같이 쓰는 꾸밈 · 스크립트는 상자마다 넣고, 그것만 있는 조각은 그리지 않는다
+    const styles = parts.filter(p => p.type === 'html' && p.tag === 'style').map(p => p.text).join('');
+    const scripts = parts.filter(p => p.type === 'html' && p.tag === 'script').map(p => p.text).join('');
+    return parts
+      .filter(p => !(p.type === 'html' && (p.tag === 'style' || p.tag === 'script')))
+      .filter(p => p.type !== 'md' || p.text.trim())
+      .map(p => p.type === 'html' ? { type: 'html', text: styles + p.text + scripts } : p);
   }
 
   // HTML을 sandbox iframe에 넣어 렌더. 스크립트·인터랙션 동작하되 부모 문서엔 접근 불가.
@@ -15591,7 +15706,7 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
       bar?.querySelector(`.${NS}-j-vedsave`)?.addEventListener('click', () => {
         const val = n => box.querySelector(`.${NS}-vedit-${n}`)?.value;
         applyMsgCounts(r, val('total'), val('user'), val('ai'));
-        if (editTr) r.translation = ta.value; else r.content = ta.value;
+        if (editTr) r.translation = normNL(ta.value); else r.content = normNL(ta.value);
         for (const a of target.querySelectorAll(`.${NS}-vedit-asktxt`)) r[a.dataset.k] = a.value.trim() || null;
         // 손으로 고쳤으면 "고치기 전으로"가 그것까지 되돌리지 않게 부분 고치기 기록을 비운다
         if (editTr) delete r.prevTranslation; else delete r.prevContent;
@@ -19427,6 +19542,8 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
   function bindFrameHeightListener() {
     if (_frameMsgBound) return; _frameMsgBound = true;
     window.addEventListener('message', handleFrameHeightMessage);
+    document.addEventListener('load', handleHtmlBoxLoad, true);   // load 는 위로 올라오지 않아 잡는 단계에서 듣는다
+    window.addEventListener('resize', resizeHtmlBoxes);
     document.addEventListener('scroll', handleFrameViewChange, { capture:true, passive:true });
     window.addEventListener('resize', handleFrameViewChange);
   }
@@ -19522,6 +19639,8 @@ ${list.length > shown.length ? `<button type="button" class="${NS}-btn ${NS}-btn
       try { bc.onmessage = null; bc.close(); } catch {}
     }
     window.removeEventListener('message', handleFrameHeightMessage);
+    document.removeEventListener('load', handleHtmlBoxLoad, true);
+    window.removeEventListener('resize', resizeHtmlBoxes);
     document.removeEventListener('scroll', handleFrameViewChange, { capture:true });
     window.removeEventListener('resize', handleFrameViewChange);
     _fixedFrames.clear();
